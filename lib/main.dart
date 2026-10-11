@@ -1,31 +1,24 @@
+import 'dart:io';
+ 
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:audioplayers/audioplayers.dart';
-
+ 
+import 'ai/fatigue_monitor.dart'; // Member 4: AI & computer vision
+ 
 late List<CameraDescription> cameras;
-
-// ======================================
-// FATIGUE LEVELS
-// ======================================
-
-enum FatigueLevel {
-  normal,
-  warning,
-  high,
-  critical,
-}
-
+ 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
+ 
   cameras = await availableCameras();
-
+ 
   runApp(const PilotFatigueApp());
 }
-
+ 
 class PilotFatigueApp extends StatelessWidget {
   const PilotFatigueApp({super.key});
-
+ 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -36,276 +29,330 @@ class PilotFatigueApp extends StatelessWidget {
     );
   }
 }
-
+ 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
-
+ 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
-
+ 
 class _DashboardScreenState extends State<DashboardScreen> {
   CameraController? controller;
-
+ 
+  // Member 4: AI / computer vision
+  final FatigueMonitor monitor = FatigueMonitor();
+ 
   // Audio player
   final AudioPlayer alertPlayer = AudioPlayer();
-
+ 
   // ======================================
-  // TEMPORARY TEST VALUES
+  // VALUES
+  // pilotDetected, blinkRate, eyeAspectRatio and fatigueLevel
+  // now come from the AI monitor (Member 4).
+  // heartRate and smartwatchConnected are still temporary (Member 3).
   // ======================================
-
+ 
   bool pilotDetected = false;
   bool autopilotEnabled = false;
-
+ 
   int heartRate = 76;
-  int blinkRate = 14;
-
-  double eyeAspectRatio = 0.31;
-
+  int blinkRate = 0;
+ 
+  double eyeAspectRatio = 0.0;
+ 
   bool smartwatchConnected = true;
-
+ 
   FatigueLevel fatigueLevel = FatigueLevel.normal;
-
+ 
   @override
   void initState() {
     super.initState();
+ 
+    monitor.addListener(_onMonitorUpdate);
+ 
     startCamera();
-
+ 
     alertPlayer.setReleaseMode(ReleaseMode.loop);
   }
-
+ 
+  // ======================================
+  // AI MONITOR UPDATES
+  // ======================================
+ 
+  void _onMonitorUpdate() {
+    if (!mounted) return;
+ 
+    final changed = pilotDetected != monitor.pilotDetected ||
+        fatigueLevel != monitor.fatigueLevel;
+ 
+    setState(() {
+      pilotDetected = monitor.pilotDetected;
+      blinkRate = monitor.blinkRate;
+      eyeAspectRatio = monitor.eyeAspectRatio;
+      fatigueLevel = monitor.fatigueLevel;
+    });
+ 
+    if (changed) {
+      updateAlertSound();
+    }
+  }
+ 
   // ======================================
   // CAMERA
   // ======================================
-
+ 
   Future<void> startCamera() async {
     if (cameras.isEmpty) return;
-
-    controller = CameraController(
-      cameras.first,
-      ResolutionPreset.high,
-      enableAudio: false,
+ 
+    // Use the FRONT camera so it faces the pilot
+    final camera = cameras.firstWhere(
+      (c) => c.lensDirection == CameraLensDirection.front,
+      orElse: () => cameras.first,
     );
-
+ 
+    controller = CameraController(
+      camera,
+      ResolutionPreset.medium, // lighter = faster face detection
+      enableAudio: false,
+      imageFormatGroup: Platform.isAndroid
+          ? ImageFormatGroup.nv21
+          : ImageFormatGroup.bgra8888,
+    );
+ 
     await controller!.initialize();
-
+ 
+    // Start sending camera frames to the AI monitor
+    await monitor.start(controller!, camera);
+ 
     if (mounted) {
       setState(() {});
     }
   }
-
+ 
   // ======================================
   // ALERT SOUND
   // ======================================
-
+ 
   Future<void> updateAlertSound() async {
     // No pilot = no alarm
     if (!pilotDetected) {
       await alertPlayer.stop();
       return;
     }
-
+ 
     // Autopilot = monitoring paused
     if (autopilotEnabled) {
       await alertPlayer.stop();
       return;
     }
-
+ 
     switch (fatigueLevel) {
       // =========================
       // NORMAL
       // =========================
-
+ 
       case FatigueLevel.normal:
         await alertPlayer.stop();
         break;
-
+ 
       // =========================
       // WARNING
       // =========================
-
+ 
       case FatigueLevel.warning:
         await alertPlayer.stop();
-
+ 
         await alertPlayer.setVolume(0.35);
         await alertPlayer.setPlaybackRate(1.0);
         await alertPlayer.setReleaseMode(ReleaseMode.loop);
-
+ 
         await alertPlayer.play(
           AssetSource('sounds/alert.mp3'),
         );
-
+ 
         break;
-
+ 
       // =========================
       // HIGH FATIGUE
       // =========================
-
+ 
       case FatigueLevel.high:
         await alertPlayer.stop();
-
+ 
         await alertPlayer.setVolume(0.70);
         await alertPlayer.setPlaybackRate(1.25);
         await alertPlayer.setReleaseMode(ReleaseMode.loop);
-
+ 
         await alertPlayer.play(
           AssetSource('sounds/alert.mp3'),
         );
-
+ 
         break;
-
+ 
       // =========================
       // CRITICAL FATIGUE
       // =========================
-
+ 
       case FatigueLevel.critical:
         await alertPlayer.stop();
-
+ 
         await alertPlayer.setVolume(1.0);
         await alertPlayer.setPlaybackRate(1.50);
         await alertPlayer.setReleaseMode(ReleaseMode.loop);
-
+ 
         await alertPlayer.play(
           AssetSource('sounds/alert.mp3'),
         );
-
+ 
         break;
     }
   }
-
+ 
   @override
   void dispose() {
+    monitor.removeListener(_onMonitorUpdate);
+    monitor.dispose();
+ 
     controller?.dispose();
     alertPlayer.dispose();
-
+ 
     super.dispose();
   }
-
+ 
   // ======================================
   // MONITORING STATUS
   // ======================================
-
+ 
   String get monitoringStatus {
     if (!pilotDetected) {
       return 'WAITING FOR PILOT';
     }
-
+ 
     if (autopilotEnabled) {
       return 'MONITORING PAUSED';
     }
-
+ 
+    if (monitor.calibrating) {
+      return 'CALIBRATING - KEEP EYES OPEN';
+    }
+ 
     return 'MONITORING ACTIVE';
   }
-
+ 
   Color get monitoringColor {
     if (!pilotDetected) {
       return Colors.orange;
     }
-
+ 
     if (autopilotEnabled) {
       return Colors.blue;
     }
-
+ 
+    if (monitor.calibrating) {
+      return Colors.yellow;
+    }
+ 
     return Colors.greenAccent;
   }
-
+ 
   IconData get monitoringIcon {
     if (!pilotDetected) {
       return Icons.person_search;
     }
-
+ 
     if (autopilotEnabled) {
       return Icons.pause_circle;
     }
-
+ 
     return Icons.sensors;
   }
-
+ 
   // ======================================
   // FATIGUE INFORMATION
   // ======================================
-
+ 
   String get fatigueText {
     switch (fatigueLevel) {
       case FatigueLevel.normal:
         return 'NORMAL';
-
+ 
       case FatigueLevel.warning:
         return 'WARNING';
-
+ 
       case FatigueLevel.high:
         return 'HIGH';
-
+ 
       case FatigueLevel.critical:
         return 'CRITICAL';
     }
   }
-
+ 
   String get fatigueMessage {
     switch (fatigueLevel) {
       case FatigueLevel.normal:
         return 'Pilot condition normal';
-
+ 
       case FatigueLevel.warning:
         return 'FATIGUE WARNING';
-
+ 
       case FatigueLevel.high:
         return 'HIGH FATIGUE DETECTED';
-
+ 
       case FatigueLevel.critical:
         return 'CRITICAL FATIGUE DETECTED';
     }
   }
-
+ 
   Color get fatigueColor {
     switch (fatigueLevel) {
       case FatigueLevel.normal:
         return Colors.greenAccent;
-
+ 
       case FatigueLevel.warning:
         return Colors.yellow;
-
+ 
       case FatigueLevel.high:
         return Colors.orange;
-
+ 
       case FatigueLevel.critical:
         return Colors.red;
     }
   }
-
+ 
   IconData get fatigueIcon {
     switch (fatigueLevel) {
       case FatigueLevel.normal:
         return Icons.check_circle;
-
+ 
       case FatigueLevel.warning:
         return Icons.warning_amber;
-
+ 
       case FatigueLevel.high:
         return Icons.warning;
-
+ 
       case FatigueLevel.critical:
         return Icons.emergency;
     }
   }
-
+ 
   // ======================================
   // SCREEN
   // ======================================
-
+ 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-
+ 
       body: Stack(
         fit: StackFit.expand,
         children: [
-
+ 
           // ==================================
           // FULL SCREEN CAMERA
           // ==================================
-
+ 
           if (controller != null &&
               controller!.value.isInitialized)
             Positioned.fill(
@@ -322,21 +369,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const Center(
               child: CircularProgressIndicator(),
             ),
-
+ 
           // ==================================
           // CAMERA DARKENING
           // ==================================
-
+ 
           Positioned.fill(
             child: Container(
               color: Colors.black.withValues(alpha: 0.12),
             ),
           ),
-
+ 
           // ==================================
           // FATIGUE WARNING BORDER
           // ==================================
-
+ 
           if (pilotDetected &&
               !autopilotEnabled &&
               fatigueLevel != FatigueLevel.normal)
@@ -355,11 +402,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ),
-
+ 
           // ==================================
           // MONITORING STATUS
           // ==================================
-
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.topCenter,
@@ -374,9 +421,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: monitoringColor,
                         size: 20,
                       ),
-
+ 
                       const SizedBox(width: 8),
-
+ 
                       Text(
                         monitoringStatus,
                         style: TextStyle(
@@ -392,11 +439,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
+ 
           // ==================================
           // CENTRE FATIGUE WARNING
           // ==================================
-
+ 
           if (pilotDetected &&
               !autopilotEnabled &&
               fatigueLevel != FatigueLevel.normal)
@@ -412,9 +459,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         color: fatigueColor,
                         size: 45,
                       ),
-
+ 
                       const SizedBox(height: 8),
-
+ 
                       Text(
                         fatigueMessage,
                         textAlign: TextAlign.center,
@@ -430,11 +477,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
             ),
-
+ 
           // ==================================
           // TOP LEFT - HEART RATE
           // ==================================
-
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.topLeft,
@@ -451,11 +498,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
+ 
           // ==================================
           // TOP RIGHT - BLINK RATE
           // ==================================
-
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.topRight,
@@ -473,11 +520,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
+ 
           // ==================================
           // LEFT SIDE - EAR
           // ==================================
-                              
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.centerLeft,
@@ -493,11 +540,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
+ 
           // ==================================
           // BOTTOM LEFT - SMARTWATCH
           // ==================================
-
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.bottomLeft,
@@ -517,11 +564,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
+ 
           // ==================================
           // BOTTOM RIGHT - FATIGUE RISK
           // ==================================
-
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.bottomRight,
@@ -540,11 +587,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
+ 
           // ==================================
-          // BOTTOM TEST CONTROLS
+          // BOTTOM CONTROLS (AUTOPILOT ONLY)
+          // The Pilot switch and fatigue dropdown were removed:
+          // those values now come from the AI monitor.
           // ==================================
-
+ 
           SafeArea(
             child: Align(
               alignment: Alignment.bottomCenter,
@@ -558,105 +607,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-
-                      // PILOT
-
-                      const Icon(
-                        Icons.person,
-                        size: 18,
-                      ),
-
-                      const SizedBox(width: 4),
-
-                      const Text('Pilot'),
-
-                      Switch(
-                        value: pilotDetected,
-                        onChanged: (value) async {
-                          setState(() {
-                            pilotDetected = value;
-                          });
-
-                          await updateAlertSound();
-                        },
-                      ),
-
-                      Container(
-                        height: 25,
-                        width: 1,
-                        color: Colors.white30,
-                      ),
-
-                      const SizedBox(width: 8),
-
+ 
                       // AUTOPILOT
-
+ 
                       const Icon(
                         Icons.flight,
                         size: 18,
                       ),
-
+ 
                       const SizedBox(width: 4),
-
+ 
                       const Text('Autopilot'),
-
+ 
                       Switch(
                         value: autopilotEnabled,
                         onChanged: (value) async {
                           setState(() {
                             autopilotEnabled = value;
                           });
-
-                          await updateAlertSound();
-                        },
-                      ),
-
-                      const SizedBox(width: 8),
-
-                      Container(
-                        height: 25,
-                        width: 1,
-                        color: Colors.white30,
-                      ),
-
-                      const SizedBox(width: 12),
-
-                      // FATIGUE LEVEL TEST
-
-                      DropdownButton<FatigueLevel>(
-                        value: fatigueLevel,
-                        dropdownColor: Colors.black87,
-                        underline: const SizedBox(),
-
-                        items: const [
-                          DropdownMenuItem(
-                            value: FatigueLevel.normal,
-                            child: Text('Normal'),
-                          ),
-
-                          DropdownMenuItem(
-                            value: FatigueLevel.warning,
-                            child: Text('Warning'),
-                          ),
-
-                          DropdownMenuItem(
-                            value: FatigueLevel.high,
-                            child: Text('High'),
-                          ),
-
-                          DropdownMenuItem(
-                            value: FatigueLevel.critical,
-                            child: Text('Critical'),
-                          ),
-                        ],
-
-                        onChanged: (value) async {
-                          if (value == null) return;
-
-                          setState(() {
-                            fatigueLevel = value;
-                          });
-
+ 
                           await updateAlertSound();
                         },
                       ),
@@ -671,19 +640,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
-
+ 
 // ======================================
 // TRANSPARENT HUD PANEL
 // ======================================
-
+ 
 class HudPanel extends StatelessWidget {
   final Widget child;
-
+ 
   const HudPanel({
     super.key,
     required this.child,
   });
-
+ 
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -702,18 +671,18 @@ class HudPanel extends StatelessWidget {
     );
   }
 }
-
+ 
 // ======================================
 // HUD METRIC
 // ======================================
-
+ 
 class HudMetric extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
   final bool alignRight;
   final Color? valueColor;
-
+ 
   const HudMetric({
     super.key,
     required this.icon,
@@ -722,7 +691,7 @@ class HudMetric extends StatelessWidget {
     this.alignRight = false,
     this.valueColor,
   });
-
+ 
   @override
   Widget build(BuildContext context) {
     return HudPanel(
@@ -741,9 +710,9 @@ class HudMetric extends StatelessWidget {
                 size: 17,
                 color: Colors.white70,
               ),
-
+ 
               const SizedBox(width: 6),
-
+ 
               Text(
                 label,
                 style: const TextStyle(
@@ -755,9 +724,9 @@ class HudMetric extends StatelessWidget {
               ),
             ],
           ),
-
+ 
           const SizedBox(height: 3),
-
+ 
           Text(
             value,
             style: TextStyle(
