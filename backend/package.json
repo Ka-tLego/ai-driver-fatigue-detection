@@ -1,0 +1,28 @@
+{
+  "name": "pilot-fatigue-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "REST API for the pilot fatigue detection prototype",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node --test \"test/*.test.js\"",
+    "seed": "node scripts/seed.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "mongoose": "^8.9.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9",
+    "supertest": "^7.3.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
