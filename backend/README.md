@@ -1,4 +1,4 @@
-# Backend API & Database (Member 6)
+# Backend API & Database
 
 Node.js + Express + MongoDB (Mongoose). Receives monitoring data from the Flutter app,
 stores it, and lets the app retrieve it. It does **not** detect fatigue itself - the app
