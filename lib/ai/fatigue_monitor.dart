@@ -280,9 +280,10 @@ class FatigueMonitor extends ChangeNotifier {
         : now.difference(_headDownSince!).inMilliseconds / 1000.0;
 
     // ----- Sliding window: PERCLOS + blink rate -----
-    final cutoff = now.subtract(const Duration(seconds: kWindowSec));
+       final cutoff = now.subtract(const Duration(seconds: kWindowSec));
+    final perclosCutoff = now.subtract(const Duration(seconds: 15));
     _samples.add(_Sample(now, closed));
-    _samples.removeWhere((s) => s.time.isBefore(cutoff));
+    _samples.removeWhere((s) => s.time.isBefore(perclosCutoff));
     _blinks.removeWhere((t) => t.isBefore(cutoff));
 
     final windowSec = min(kWindowSec.toDouble(),
@@ -307,19 +308,19 @@ class FatigueMonitor extends ChangeNotifier {
     }
 
     // PERCLOS (needs ~10 s of data)
+        // PERCLOS over the last 15 s
     if (windowSec >= 10) {
-      if (perclos >= 0.30) {
+      if (perclos >= 0.40) {
         raise(FatigueLevel.high);
-      } else if (perclos >= 0.15) {
+      } else if (perclos >= 0.25) {
         raise(FatigueLevel.warning);
       }
     }
 
-    // abnormal blink rate (needs ~30 s of data)
-    if (windowSec >= 30 && (blinkRate > 28 || blinkRate < 6)) {
+    // very high blink rate only
+    if (windowSec >= 30 && blinkRate > 28) {
       raise(FatigueLevel.warning);
     }
-
     // head nodding down
     if (headDownSec >= 2.5) {
       raise(FatigueLevel.high);
@@ -333,7 +334,7 @@ class FatigueMonitor extends ChangeNotifier {
       _lowerSince = null;
     } else {
       _lowerSince ??= now;
-      if (now.difference(_lowerSince!).inMilliseconds >= 3000) {
+      if (now.difference(_lowerSince!).inMilliseconds >= 1000) {
         fatigueLevel = target;
         _lowerSince = null;
       }
