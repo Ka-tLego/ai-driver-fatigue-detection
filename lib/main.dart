@@ -37,7 +37,8 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
  
-class _DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen>
+    with WidgetsBindingObserver {
   CameraController? controller;
  
   // Member 4: AI / computer vision
@@ -68,7 +69,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
- 
+
+    WidgetsBinding.instance.addObserver(this);
+
     monitor.addListener(_onMonitorUpdate);
  
     startCamera();
@@ -120,13 +123,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
           : ImageFormatGroup.bgra8888,
     );
  
-    await controller!.initialize();
- 
+    final newController = controller!;
+
+    await newController.initialize();
+
+    // App was paused or closed while the camera was starting up
+    if (!mounted ||
+        controller != newController ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      if (controller == newController) controller = null;
+      await newController.dispose();
+      return;
+    }
+
     // Start sending camera frames to the AI monitor
-    await monitor.start(controller!, camera);
- 
+    await monitor.start(newController, camera);
+
     if (mounted) {
       setState(() {});
+    }
+  }
+
+  // Release the camera so it never sends frames to a detached app
+  // (this caused a crash when the app was closed).
+  Future<void> stopCamera() async {
+    final oldController = controller;
+    if (oldController == null) return;
+
+    // Remove the preview from the screen before disposing the controller
+    setState(() {
+      controller = null;
+      pilotDetected = false;
+      fatigueLevel = FatigueLevel.normal;
+    });
+
+    await alertPlayer.stop();
+    await monitor.stop();
+    await oldController.dispose();
+  }
+
+  // ======================================
+  // APP LIFECYCLE (background / foreground)
+  // ======================================
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final current = controller;
+
+    if (state == AppLifecycleState.resumed) {
+      if (current == null) startCamera();
+    } else if (current != null && current.value.isInitialized) {
+      // inactive, hidden, paused or detached
+      stopCamera();
     }
   }
  
@@ -211,6 +259,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
  
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     monitor.removeListener(_onMonitorUpdate);
     monitor.dispose();
  

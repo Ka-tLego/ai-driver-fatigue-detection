@@ -1,9 +1,7 @@
-// This is a basic Flutter widget test.
+// Smoke test for the HUD widgets.
 //
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// PilotFatigueApp itself needs real cameras (availableCameras() runs in
+// main), so this only tests the camera-free HUD building blocks.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,20 +9,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pilot_fatigue_app/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('HudMetric shows its label and value', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: HudMetric(
+            icon: Icons.favorite,
+            label: 'HEART RATE',
+            value: '76 BPM',
+          ),
+        ),
+      ),
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('HEART RATE'), findsOneWidget);
+    expect(find.text('76 BPM'), findsOneWidget);
+    expect(find.byIcon(Icons.favorite), findsOneWidget);
+    expect(find.byType(HudPanel), findsOneWidget);
   });
 }

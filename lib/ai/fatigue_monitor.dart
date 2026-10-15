@@ -5,7 +5,6 @@
 
 import 'dart:io';
 import 'dart:math';
-import 'dart:ui' show Size;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -92,6 +91,25 @@ class FatigueMonitor extends ChangeNotifier {
     await controller.startImageStream(_onFrame);
   }
 
+  /// Stop processing frames (e.g. app paused). Call before disposing the
+  /// CameraController. Calibration restarts on the next start().
+  Future<void> stop() async {
+    final controller = _controller;
+    _controller = null;
+    _camera = null;
+    if (controller != null && controller.value.isStreamingImages) {
+      await controller.stopImageStream();
+    }
+    pilotDetected = false;
+    eyeAspectRatio = 0.0;
+    fatigueLevel = FatigueLevel.normal;
+    closureSeconds = 0.0;
+    _lastFaceTime = null;
+    _headDownSince = null;
+    _lowerSince = null;
+    recalibrate();
+  }
+
   /// Restart calibration (e.g. a "Recalibrate" button).
   void recalibrate() {
     _baseline = null;
@@ -119,7 +137,7 @@ class FatigueMonitor extends ChangeNotifier {
       final input = _toInputImage(image);
       if (input == null) return;
       final faces = await _detector.processImage(input);
-      if (_disposed) return;
+      if (_disposed || _controller == null) return; // stopped meanwhile
       _update(faces, DateTime.now());
     } catch (e) {
       debugPrint('FatigueMonitor error: $e');
