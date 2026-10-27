@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:audioplayers/audioplayers.dart';
  
 import 'ai/fatigue_monitor.dart'; // Member 4: AI & computer vision
+import 'sensors/heart_rate_monitor.dart'; // Garmin HR strap (Bluetooth)
  
 late List<CameraDescription> cameras;
  
@@ -43,6 +44,9 @@ class _DashboardScreenState extends State<DashboardScreen>
  
   // Member 4: AI / computer vision
   final FatigueMonitor monitor = FatigueMonitor();
+
+  // Heart rate from the Garmin chest strap over Bluetooth
+  final HeartRateMonitor heartMonitor = HeartRateMonitor();
  
   // Audio player
   final AudioPlayer alertPlayer = AudioPlayer();
@@ -51,18 +55,16 @@ class _DashboardScreenState extends State<DashboardScreen>
   // VALUES
   // pilotDetected, blinkRate, eyeAspectRatio and fatigueLevel
   // now come from the AI monitor (Member 4).
-  // heartRate and smartwatchConnected are still temporary (Member 3).
+  // heartRate and the strap status come from the Garmin HR strap over
+  // Bluetooth (heartMonitor).
   // ======================================
  
   bool pilotDetected = false;
   bool autopilotEnabled = false;
  
-  int heartRate = 76;
   int blinkRate = 0;
  
   double eyeAspectRatio = 0.0;
- 
-  bool smartwatchConnected = true;
  
   FatigueLevel fatigueLevel = FatigueLevel.normal;
  
@@ -73,6 +75,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     WidgetsBinding.instance.addObserver(this);
 
     monitor.addListener(_onMonitorUpdate);
+
+    heartMonitor.addListener(_onHeartMonitorUpdate);
+    heartMonitor.start();
  
     startCamera();
  
@@ -101,6 +106,11 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
  
+  void _onHeartMonitorUpdate() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
   // ======================================
   // CAMERA
   // ======================================
@@ -262,6 +272,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     WidgetsBinding.instance.removeObserver(this);
     monitor.removeListener(_onMonitorUpdate);
     monitor.dispose();
+    heartMonitor.removeListener(_onHeartMonitorUpdate);
+    heartMonitor.dispose();
  
     controller?.dispose();
     alertPlayer.dispose();
@@ -317,6 +329,30 @@ class _DashboardScreenState extends State<DashboardScreen>
     return Icons.sensors;
   }
  
+  // ======================================
+  // HR STRAP INFORMATION
+  // ======================================
+
+  String get heartRateText {
+    final bpm = heartMonitor.heartRate;
+    return bpm == null ? '-- BPM' : '$bpm BPM';
+  }
+
+  String get strapText {
+    switch (heartMonitor.status) {
+      case StrapStatus.unsupported:
+        return 'NO BLUETOOTH';
+      case StrapStatus.bluetoothOff:
+        return 'BLUETOOTH OFF';
+      case StrapStatus.searching:
+        return 'SEARCHING';
+      case StrapStatus.connecting:
+        return 'CONNECTING';
+      case StrapStatus.connected:
+        return 'CONNECTED';
+    }
+  }
+
   // ======================================
   // FATIGUE INFORMATION
   // ======================================
@@ -542,7 +578,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 child: HudMetric(
                   icon: Icons.favorite,
                   label: 'HEART RATE',
-                  value: '$heartRate BPM',
+                  value: heartRateText,
                 ),
               ),
             ),
@@ -591,7 +627,7 @@ class _DashboardScreenState extends State<DashboardScreen>
           ),
  
           // ==================================
-          // BOTTOM LEFT - SMARTWATCH
+          // BOTTOM LEFT - HR STRAP
           // ==================================
  
           SafeArea(
@@ -603,12 +639,12 @@ class _DashboardScreenState extends State<DashboardScreen>
                   bottom: 100,
                 ),
                 child: HudMetric(
-                  icon: Icons.watch,
-                  label: 'SMARTWATCH',
-                  value:
-                      smartwatchConnected
-                          ? 'CONNECTED'
-                          : 'DISCONNECTED',
+                  icon: Icons.monitor_heart,
+                  label: 'HR STRAP',
+                  value: strapText,
+                  valueColor: heartMonitor.connected
+                      ? Colors.greenAccent
+                      : Colors.orange,
                 ),
               ),
             ),
