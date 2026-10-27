@@ -63,9 +63,11 @@ class Sim {
 
 void main() {
   // ======================================
-  // Up immediately; down only after 30 s below the current level (LevelGate)
+  // Up immediately; down only after kLevelDwell below the current level
   // ======================================
-  group('levels go up immediately, down after 30 s', () {
+  final d = kLevelDwell.inMilliseconds / 1000; // dwell in seconds (15)
+
+  group('levels go up immediately, down after the dwell time', () {
     final t0 = DateTime(2026, 10, 28, 8);
     DateTime s(num seconds) => t0.add(Duration(milliseconds: (seconds * 1000).round()));
 
@@ -85,36 +87,36 @@ void main() {
       expect((LevelGate()..update(LevelGate.levelFor(60), s(0))).level, FatigueLevel.high);
     });
 
-    test('goes down only after 30 s below the current level', () {
+    test('goes down only after the dwell time below the current level', () {
       final g = LevelGate()..update(LevelGate.levelFor(40), s(0)); // warning
-      hold(g, 10, 0.1, 30);
-      expect(g.level, FatigueLevel.warning, reason: 'only 29.9 s lower');
-      hold(g, 10, 30, 30.3);
+      hold(g, 10, 0.1, d);
+      expect(g.level, FatigueLevel.warning, reason: 'just under the dwell time');
+      hold(g, 10, d, d + 0.3);
       expect(g.level, FatigueLevel.normal);
     });
 
-    test('goes down one level per 30 s', () {
+    test('goes down one level per dwell time', () {
       final g = LevelGate()..update(LevelGate.levelFor(95), s(0)); // critical
-      hold(g, 0, 0.1, 30.2);
+      hold(g, 0, 0.1, d + 0.2);
       expect(g.level, FatigueLevel.high);
-      hold(g, 0, 30.2, 60.3);
+      hold(g, 0, d + 0.2, 2 * d + 0.3);
       expect(g.level, FatigueLevel.warning);
-      hold(g, 0, 60.3, 90.4);
+      hold(g, 0, 2 * d + 0.3, 3 * d + 0.4);
       expect(g.level, FatigueLevel.normal);
     });
 
     test('coming back into the current level resets the down timer', () {
       final g = LevelGate()..update(LevelGate.levelFor(60), s(0)); // high
-      hold(g, 10, 0.1, 25); // lower for 25 s
-      hold(g, 60, 25, 26); // back in high
-      hold(g, 10, 26, 51); // lower for 25 s
+      hold(g, 10, 0.1, 0.8 * d); // lower, not long enough
+      hold(g, 60, 0.8 * d, 0.8 * d + 1); // back in high
+      hold(g, 10, 0.8 * d + 1, 1.6 * d + 1); // lower again, not long enough
       expect(g.level, FatigueLevel.high);
     });
 
     test('a rise while waiting to go down applies immediately', () {
       final g = LevelGate()..update(LevelGate.levelFor(60), s(0)); // high
-      hold(g, 10, 0.1, 20);
-      g.update(LevelGate.levelFor(85), s(20));
+      hold(g, 10, 0.1, 0.6 * d);
+      g.update(LevelGate.levelFor(85), s(0.6 * d));
       expect(g.level, FatigueLevel.critical);
     });
   });
@@ -149,25 +151,25 @@ void main() {
     expect(sim.est.level, FatigueLevel.critical, reason: 'eyes closed 3.2 s');
     expect(sim.est.reason, contains('eyes closed'));
 
-    // Eyes open again: the level is held, then steps down every 30 s
-    sim.alert(const Duration(seconds: 8));
-    expect(sim.est.level, FatigueLevel.critical, reason: 'held for 30 s');
+    // Eyes open again: the level is held, then steps down every kLevelDwell
+    sim.frames(kLevelDwell * 0.5);
+    expect(sim.est.level, FatigueLevel.critical, reason: 'held for the dwell time');
     expect(sim.est.reason, contains('eyes closed'), reason: 'still shows what raised it');
-    sim.alert(const Duration(seconds: 24));
+    sim.frames(kLevelDwell * 0.8); // 1.3 x dwell since the eyes opened
     expect(sim.est.level, FatigueLevel.high);
-    sim.alert(const Duration(seconds: 60));
+    sim.alert(kLevelDwell * 4);
     expect(sim.est.level, FatigueLevel.normal);
     expect(sim.est.recentMicrosleeps, 1);
   });
 
-  test('a head drop is held for 30 s after the head comes back up', () {
+  test('a head drop is held for the dwell time after the head comes back up', () {
     final sim = Sim()..alert(const Duration(minutes: 2));
     sim.frames(const Duration(milliseconds: 3200), pitch: -30);
     expect(sim.est.level, FatigueLevel.high);
-    sim.alert(const Duration(seconds: 20));
+    sim.frames(kLevelDwell * 0.7);
     expect(sim.est.level, FatigueLevel.high);
     expect(sim.est.reason, 'head dropped');
-    sim.alert(const Duration(seconds: 16));
+    sim.frames(kLevelDwell * 0.5);
     expect(sim.est.level.index, lessThan(FatigueLevel.high.index));
   });
 

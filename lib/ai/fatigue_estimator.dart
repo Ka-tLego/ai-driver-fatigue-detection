@@ -56,7 +56,7 @@ const double kHighScore = 55;
 const double kCriticalScore = 80;
 // Levels go up immediately; to go down one level, the score must stay
 // below the current level's range this long. One step down at a time.
-const Duration kLevelDwell = Duration(seconds: 30);
+const Duration kLevelDwell = Duration(seconds: 15);
 
 // ----- Immediate safety overrides -----
 const double kHighClosureSec = 1.5; // eyes closed (not yawning) -> at least HIGH
@@ -90,7 +90,7 @@ class _Sample {
 /// alarm, whichever is higher). Going up is immediate. Going down needs the
 /// target to stay below the current level for kLevelDwell, then drops one
 /// level; each further step down needs another kLevelDwell. So every level
-/// is held at least 30 s, however it was reached. Critical -> normal takes
+/// is held at least kLevelDwell (15 s), however it was reached. Critical -> normal takes
 /// at least 3 x kLevelDwell.
 class LevelGate {
   FatigueLevel level = FatigueLevel.normal;
@@ -118,7 +118,7 @@ class LevelGate {
       _downSince ??= t; // below the current range: start / keep timing
       if (t.difference(_downSince!) >= kLevelDwell) {
         level = FatigueLevel.values[level.index - 1];
-        _downSince = null; // the next step down needs its own 30 s
+        _downSince = null; // the next step down needs its own dwell
       }
     } else {
       _downSince = null; // back in the current range: start over
@@ -272,7 +272,7 @@ class FatigueEstimator {
     }
     if (alarm != null) wantedReason = alarm;
 
-    // ----- Shown level: up immediately, held >= 30 s before each step down -----
+    // ----- Shown level: up immediately, held >= kLevelDwell before each step down -----
     final before = level;
     level = _gate.update(wanted, t);
     if (level.index > before.index || level == wanted) {
