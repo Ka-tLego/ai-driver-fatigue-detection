@@ -72,21 +72,21 @@ void main() {
     /// Feeds [score] every 100 ms from [from] to [to] seconds.
     void hold(LevelGate g, double score, num from, num to) {
       for (var x = from; x < to; x += 0.1) {
-        g.update(score, s(x));
+        g.update(LevelGate.levelFor(score), s(x));
       }
     }
 
     test("goes up immediately, straight to the score's level", () {
       final g = LevelGate();
-      g.update(40, s(0));
+      g.update(LevelGate.levelFor(40), s(0));
       expect(g.level, FatigueLevel.warning);
-      g.update(95, s(0.1));
+      g.update(LevelGate.levelFor(95), s(0.1));
       expect(g.level, FatigueLevel.critical);
-      expect((LevelGate()..update(60, s(0))).level, FatigueLevel.high);
+      expect((LevelGate()..update(LevelGate.levelFor(60), s(0))).level, FatigueLevel.high);
     });
 
     test('goes down only after 30 s below the current level', () {
-      final g = LevelGate()..update(40, s(0)); // warning
+      final g = LevelGate()..update(LevelGate.levelFor(40), s(0)); // warning
       hold(g, 10, 0.1, 30);
       expect(g.level, FatigueLevel.warning, reason: 'only 29.9 s lower');
       hold(g, 10, 30, 30.3);
@@ -94,7 +94,7 @@ void main() {
     });
 
     test('goes down one level per 30 s', () {
-      final g = LevelGate()..update(95, s(0)); // critical
+      final g = LevelGate()..update(LevelGate.levelFor(95), s(0)); // critical
       hold(g, 0, 0.1, 30.2);
       expect(g.level, FatigueLevel.high);
       hold(g, 0, 30.2, 60.3);
@@ -104,7 +104,7 @@ void main() {
     });
 
     test('coming back into the current level resets the down timer', () {
-      final g = LevelGate()..update(60, s(0)); // high
+      final g = LevelGate()..update(LevelGate.levelFor(60), s(0)); // high
       hold(g, 10, 0.1, 25); // lower for 25 s
       hold(g, 60, 25, 26); // back in high
       hold(g, 10, 26, 51); // lower for 25 s
@@ -112,9 +112,9 @@ void main() {
     });
 
     test('a rise while waiting to go down applies immediately', () {
-      final g = LevelGate()..update(60, s(0)); // high
+      final g = LevelGate()..update(LevelGate.levelFor(60), s(0)); // high
       hold(g, 10, 0.1, 20);
-      g.update(85, s(20));
+      g.update(LevelGate.levelFor(85), s(20));
       expect(g.level, FatigueLevel.critical);
     });
   });
@@ -149,9 +149,26 @@ void main() {
     expect(sim.est.level, FatigueLevel.critical, reason: 'eyes closed 3.2 s');
     expect(sim.est.reason, contains('eyes closed'));
 
+    // Eyes open again: the level is held, then steps down every 30 s
     sim.alert(const Duration(seconds: 8));
-    expect(sim.est.level.index, lessThan(FatigueLevel.high.index));
+    expect(sim.est.level, FatigueLevel.critical, reason: 'held for 30 s');
+    expect(sim.est.reason, contains('eyes closed'), reason: 'still shows what raised it');
+    sim.alert(const Duration(seconds: 24));
+    expect(sim.est.level, FatigueLevel.high);
+    sim.alert(const Duration(seconds: 60));
+    expect(sim.est.level, FatigueLevel.normal);
     expect(sim.est.recentMicrosleeps, 1);
+  });
+
+  test('a head drop is held for 30 s after the head comes back up', () {
+    final sim = Sim()..alert(const Duration(minutes: 2));
+    sim.frames(const Duration(milliseconds: 3200), pitch: -30);
+    expect(sim.est.level, FatigueLevel.high);
+    sim.alert(const Duration(seconds: 20));
+    expect(sim.est.level, FatigueLevel.high);
+    expect(sim.est.reason, 'head dropped');
+    sim.alert(const Duration(seconds: 16));
+    expect(sim.est.level.index, lessThan(FatigueLevel.high.index));
   });
 
   test('fatigue builds up gradually from slow blinks and yawns', () {

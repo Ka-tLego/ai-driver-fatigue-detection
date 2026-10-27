@@ -86,11 +86,12 @@ class _Sample {
   _Sample(this.time, this.closed);
 }
 
-/// Turns the score into a level. Going up is immediate (straight to the
-/// score's level). Going down needs the score to stay below the current
-/// level's range for kLevelDwell, then drops one level; each further step
-/// down needs another kLevelDwell. Critical -> normal takes at least
-/// 3 x kLevelDwell.
+/// Decides the shown level from the target level (score level or a safety
+/// alarm, whichever is higher). Going up is immediate. Going down needs the
+/// target to stay below the current level for kLevelDwell, then drops one
+/// level; each further step down needs another kLevelDwell. So every level
+/// is held at least 30 s, however it was reached. Critical -> normal takes
+/// at least 3 x kLevelDwell.
 class LevelGate {
   FatigueLevel level = FatigueLevel.normal;
   DateTime? _downSince;
@@ -109,9 +110,7 @@ class LevelGate {
     return FatigueLevel.normal;
   }
 
-  FatigueLevel update(double score, DateTime t) {
-    final target = levelFor(score);
-
+  FatigueLevel update(FatigueLevel target, DateTime t) {
     if (target.index > level.index) {
       level = target; // up: immediately
       _downSince = null;
@@ -194,6 +193,7 @@ class FatigueEstimator {
     score = 0;
     level = FatigueLevel.normal;
     _gate.reset();
+    _raisedBy = '';
     reason = '';
     blinkRate = 0;
     perclos = 0;
@@ -254,26 +254,39 @@ class FatigueEstimator {
     score += (target - score) * (1 - exp(-dt / tau));
     score = score.clamp(0, 100).toDouble();
 
-    // ----- Level from score (30 s in the next/previous range per step) -----
-    final scoreLevel = _gate.update(score, t);
-
-    // ----- Immediate safety overrides (on top of the score level) -----
-    var shown = scoreLevel;
-    reason = _mainReason(parts);
+    // ----- Target level: the score's level, or a safety alarm if higher -----
+    var wanted = LevelGate.levelFor(score);
+    var wantedReason = _mainReason(parts);
+    String? alarm;
     if (closureSeconds >= kCriticalClosureSec) {
-      shown = FatigueLevel.critical;
-      reason = 'eyes closed ${closureSeconds.toStringAsFixed(1)} s';
+      wanted = FatigueLevel.critical;
+      alarm = 'eyes closed ${closureSeconds.toStringAsFixed(1)} s';
     } else if (closureSeconds >= kHighClosureSec &&
-        shown.index < FatigueLevel.high.index) {
-      shown = FatigueLevel.high;
-      reason = 'eyes closed ${closureSeconds.toStringAsFixed(1)} s';
+        wanted.index < FatigueLevel.high.index) {
+      wanted = FatigueLevel.high;
+      alarm = 'eyes closed ${closureSeconds.toStringAsFixed(1)} s';
     } else if (headDownSec >= kHighHeadDownSec &&
-        shown.index < FatigueLevel.high.index) {
-      shown = FatigueLevel.high;
-      reason = 'head dropped';
+        wanted.index < FatigueLevel.high.index) {
+      wanted = FatigueLevel.high;
+      alarm = 'head dropped';
     }
-    level = shown;
+    if (alarm != null) wantedReason = alarm;
+
+    // ----- Shown level: up immediately, held >= 30 s before each step down -----
+    final before = level;
+    level = _gate.update(wanted, t);
+    if (level.index > before.index || level == wanted) {
+      // Raised now, or the target still explains the level
+      reason = wantedReason;
+      _raisedBy = wantedReason;
+    } else {
+      // Held above the target: keep showing what raised it
+      reason = _raisedBy.isNotEmpty ? _raisedBy : wantedReason;
+    }
+    if (level == FatigueLevel.normal) _raisedBy = '';
   }
+
+  String _raisedBy = ''; // cause of the current (held) level
 
   // ======================================
   // SIGNALS
