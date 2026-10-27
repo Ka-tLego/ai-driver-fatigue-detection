@@ -54,8 +54,8 @@ const double kFallSeconds = 90; // and falls over ~90 s
 const double kWarningScore = 30;
 const double kHighScore = 55;
 const double kCriticalScore = 80;
-// To move up or down one level, the score must stay in the next (or
-// previous) level's range this long. One step at a time.
+// Levels go up immediately; to go down one level, the score must stay
+// below the current level's range this long. One step down at a time.
 const Duration kLevelDwell = Duration(seconds: 30);
 
 // ----- Immediate safety overrides -----
@@ -86,13 +86,13 @@ class _Sample {
   _Sample(this.time, this.closed);
 }
 
-/// Turns the score into a level, one step at a time: the score must stay in
-/// the next level's range (or below the current level's range) for
-/// kLevelDwell before the level moves. Normal -> high therefore takes at
-/// least 2 x kLevelDwell.
+/// Turns the score into a level. Going up is immediate (straight to the
+/// score's level). Going down needs the score to stay below the current
+/// level's range for kLevelDwell, then drops one level; each further step
+/// down needs another kLevelDwell. Critical -> normal takes at least
+/// 3 x kLevelDwell.
 class LevelGate {
   FatigueLevel level = FatigueLevel.normal;
-  DateTime? _upSince;
   DateTime? _downSince;
 
   static double threshold(FatigueLevel l) => switch (l) {
@@ -102,34 +102,33 @@ class LevelGate {
         FatigueLevel.normal => 0,
       };
 
-  FatigueLevel update(double score, DateTime t) {
-    final canGoUp = level != FatigueLevel.critical;
-    final next = canGoUp ? FatigueLevel.values[level.index + 1] : level;
-    final up = canGoUp && score >= threshold(next);
-    final down = level != FatigueLevel.normal && score < threshold(level);
+  static FatigueLevel levelFor(double score) {
+    if (score >= kCriticalScore) return FatigueLevel.critical;
+    if (score >= kHighScore) return FatigueLevel.high;
+    if (score >= kWarningScore) return FatigueLevel.warning;
+    return FatigueLevel.normal;
+  }
 
-    if (up) {
+  FatigueLevel update(double score, DateTime t) {
+    final target = levelFor(score);
+
+    if (target.index > level.index) {
+      level = target; // up: immediately
       _downSince = null;
-      _upSince ??= t;
-      if (t.difference(_upSince!) >= kLevelDwell) {
-        level = next;
-        _upSince = null; // the next step needs its own dwell
-      }
-    } else if (down) {
-      _upSince = null;
-      _downSince ??= t;
+    } else if (target.index < level.index) {
+      _downSince ??= t; // below the current range: start / keep timing
       if (t.difference(_downSince!) >= kLevelDwell) {
         level = FatigueLevel.values[level.index - 1];
-        _downSince = null;
+        _downSince = null; // the next step down needs its own 30 s
       }
     } else {
-      _upSince = _downSince = null; // back in the current range: start over
+      _downSince = null; // back in the current range: start over
     }
     return level;
   }
 
-  /// Pauses the dwell timers (e.g. face out of view); keeps the level.
-  void interrupt() => _upSince = _downSince = null;
+  /// Pauses the down timer (e.g. face out of view); keeps the level.
+  void interrupt() => _downSince = null;
 
   void reset() {
     level = FatigueLevel.normal;
