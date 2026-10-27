@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
  
 import 'package:flutter/material.dart';
@@ -6,6 +7,7 @@ import 'package:audioplayers/audioplayers.dart';
  
 import 'ai/fatigue_monitor.dart'; // Member 4: AI & computer vision
 import 'sensors/heart_rate_monitor.dart'; // Garmin HR strap (Bluetooth)
+import 'services/backend_service.dart'; // REST backend
  
 late List<CameraDescription> cameras;
  
@@ -47,6 +49,13 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   // Heart rate from the Garmin chest strap over Bluetooth
   final HeartRateMonitor heartMonitor = HeartRateMonitor();
+
+  // Backend: readings are sent every few seconds (see _syncBackend)
+  final BackendService backendService = BackendService();
+  String? sessionId;
+  Timer? _backendTimer;
+  bool _backendBusy = false;
+  bool? _backendOnline; // null = not tried yet
  
   // Audio player
   final AudioPlayer alertPlayer = AudioPlayer();
@@ -80,6 +89,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     heartMonitor.start();
  
     startCamera();
+
+    _backendTimer = Timer.periodic(kBackendInterval, (_) => _syncBackend());
  
     alertPlayer.setReleaseMode(ReleaseMode.loop);
   }
@@ -87,20 +98,20 @@ class _DashboardScreenState extends State<DashboardScreen>
   // ======================================
   // AI MONITOR UPDATES
   // ======================================
- 
+
   void _onMonitorUpdate() {
     if (!mounted) return;
- 
+
     final changed = pilotDetected != monitor.pilotDetected ||
         fatigueLevel != monitor.fatigueLevel;
- 
+
     setState(() {
       pilotDetected = monitor.pilotDetected;
       blinkRate = monitor.blinkRate;
       eyeAspectRatio = monitor.eyeAspectRatio;
       fatigueLevel = monitor.fatigueLevel;
     });
- 
+
     if (changed) {
       updateAlertSound();
     }
@@ -110,6 +121,49 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (!mounted) return;
     setState(() {});
   }
+
+  // ======================================
+  // BACKEND
+  // Runs on a timer, separate from the camera, so an unreachable
+  // backend never stops fatigue monitoring. Keeps retrying until the
+  // backend is up.
+  // ======================================
+
+  Future<void> _syncBackend() async {
+    // Only while monitoring, and never two requests at once
+    if (controller == null || _backendBusy) return;
+    _backendBusy = true;
+
+    try {
+      sessionId ??= await backendService.createSession(
+        pilotId: 'pilot-001',
+        notes: 'Created by the Flutter fatigue monitoring app',
+      );
+
+      final bpm = heartMonitor.heartRate;
+      await backendService.sendReading(
+        sessionId: sessionId!,
+        heartRateBpm: bpm?.toDouble(),
+        blinkRatePerMinute: blinkRate.toDouble(),
+        ear: eyeAspectRatio,
+        fatigueLevel: fatigueLevel.name,
+      );
+
+      if (_backendOnline != true) {
+        _backendOnline = true;
+        debugPrint('Backend connected (session $sessionId)');
+      }
+    } catch (e) {
+      // Log once per outage, not every few seconds
+      if (_backendOnline != false) {
+        debugPrint('Backend unavailable at ${BackendService.baseUrl}: $e');
+      }
+      _backendOnline = false;
+    } finally {
+      _backendBusy = false;
+    }
+  }
+
 
   // ======================================
   // CAMERA
@@ -274,6 +328,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     monitor.dispose();
     heartMonitor.removeListener(_onHeartMonitorUpdate);
     heartMonitor.dispose();
+    _backendTimer?.cancel();
  
     controller?.dispose();
     alertPlayer.dispose();
