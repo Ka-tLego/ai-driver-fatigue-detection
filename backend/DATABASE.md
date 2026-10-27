@@ -17,6 +17,7 @@ monitoringsessions 1 ──< sensorreadings
 | notes | String | |
 | startedAt | Date | session start timestamp |
 | endedAt | Date / null | set when status becomes `ended` |
+| isDemo | Boolean | `true` for drives made by `npm run demo:add` |
 | createdAt, updatedAt | Date | automatic |
 
 ## sensorreadings - time series of measurements
@@ -39,4 +40,6 @@ Index: `{ sessionId: 1, recordedAt: -1 }`.
 | severity | `Warning` / `High` / `Critical`, required | |
 | message | String, required | |
 | fatigueLevel | `normal` / `warning` / `high` / `critical` | optional |
-| occurredAt | Date | event timestamp |
+| heartRateBpm, blinkRatePerMinute, ear | Number | pilot's state at the event (optional) |
+| closureSeconds | Number | eye closure length when the event fired (optional) |
+| occurredAt | Date, indexed | event timestamp (sent by the app; may arrive late) |

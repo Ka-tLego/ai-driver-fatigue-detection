@@ -8,9 +8,12 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "node --test \"test/*.test.js\"",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "demo:add": "node scripts/demo-data.js add",
+    "demo:remove": "node scripts/demo-data.js remove"
   },
   "dependencies": {
+    "chart.js": "^4.6.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",

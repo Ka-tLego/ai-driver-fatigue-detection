@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fatigue Dashboard</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <h1>Fatigue dashboard</h1>
+      <p class="subtitle">Pilot fatigue events from the monitoring app, with the times of day and drive lengths where they cluster.</p>
+    </div>
+    <p class="updated" id="updated" aria-live="polite"></p>
+  </header>
+
+  <!-- Filters: one row, scope everything below -->
+  <form class="filters" id="filters">
+    <label class="field">
+      <span>Period</span>
+      <select id="days">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="">All time</option>
+      </select>
+    </label>
+    <fieldset class="segmented" aria-label="Show">
+      <legend>Show</legend>
+      <label><input type="radio" name="measure" value="count" checked> Event count</label>
+      <label><input type="radio" name="measure" value="rate"> Events per driving hour</label>
+    </fieldset>
+    <label class="check"><input type="checkbox" id="includeDemo"> Include demo data</label>
+  </form>
+
+  <p class="notice" id="notice" hidden></p>
+
+  <main id="content">
+    <!-- KPIs -->
+    <section class="kpis" aria-label="Summary">
+      <div class="tile hero">
+        <span class="tile-label">Fatigue events</span>
+        <span class="tile-value" id="kpi-events">–</span>
+        <span class="tile-detail" id="kpi-severity"></span>
+      </div>
+      <div class="tile"><span class="tile-label">Driving time monitored</span><span class="tile-value" id="kpi-hours">–</span><span class="tile-detail" id="kpi-sessions"></span></div>
+      <div class="tile"><span class="tile-label">Events per driving hour</span><span class="tile-value" id="kpi-rate">–</span><span class="tile-detail">Average across all driving</span></div>
+      <div class="tile"><span class="tile-label">Average time to first event</span><span class="tile-value" id="kpi-first">–</span><span class="tile-detail" id="kpi-first-detail"></span></div>
+      <div class="tile"><span class="tile-label">Longest eye closure</span><span class="tile-value" id="kpi-closure">–</span><span class="tile-detail">Single event</span></div>
+    </section>
+
+    <!-- Key findings -->
+    <section class="findings">
+      <article class="card finding">
+        <h2>Break recommendation</h2>
+        <p class="finding-main" id="break-main">–</p>
+        <p class="muted" id="break-detail"></p>
+      </article>
+      <article class="card finding">
+        <h2>Most dangerous times</h2>
+        <p class="muted small" id="danger-intro"></p>
+        <ol class="danger-list" id="danger-list"></ol>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>By time of day</h2>
+          <p class="muted small" id="hour-sub"></p>
+        </header>
+        <div class="legend" id="hour-legend"></div>
+        <div class="chart-box"><canvas id="hour-chart" role="img" aria-label="Fatigue events by hour of day"></canvas></div>
+        <details class="table-view"><summary>View as table</summary><div id="hour-table"></div></details>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>By time into the drive</h2>
+          <p class="muted small" id="drive-sub"></p>
+        </header>
+        <div class="legend" id="drive-legend"></div>
+        <div class="chart-box"><canvas id="drive-chart" role="img" aria-label="Fatigue events by time into the drive"></canvas></div>
+        <details class="table-view"><summary>View as table</summary><div id="drive-table"></div></details>
+      </article>
+    </section>
+
+    <article class="card">
+      <header class="card-head">
+        <h2>Danger map: time of day × time into the drive</h2>
+        <p class="muted small">Events per driving hour. Darker = more fatigue. <span class="danger-key" aria-hidden="true">⚠</span> marks combinations at least <span id="danger-ratio">1.5</span>× the average rate. Hatched cells have under <span id="min-exposure">60</span> minutes of driving, too little to judge.</p>
+      </header>
+      <div class="heat-scale" id="heat-scale"></div>
+      <div class="heatmap-wrap"><div class="heatmap" id="heatmap" role="grid" aria-label="Fatigue rate by hour of day and time into the drive"></div></div>
+      <details class="table-view"><summary>View as table</summary><div id="heat-table"></div></details>
+    </article>
+
+    <section class="grid-2">
+      <article class="card">
+        <header class="card-head">
+          <h2>Heart rate before fatigue events</h2>
+          <p class="muted small">Average heart rate from the HR strap.</p>
+        </header>
+        <p class="finding-main small-main" id="hr-message"></p>
+        <div class="dotplot" id="hr-dotplot"></div>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>By day of the week</h2>
+          <p class="muted small" id="dow-sub"></p>
+        </header>
+        <div class="legend" id="dow-legend"></div>
+        <div class="chart-box short"><canvas id="dow-chart" role="img" aria-label="Fatigue events by day of the week"></canvas></div>
+        <details class="table-view"><summary>View as table</summary><div id="dow-table"></div></details>
+      </article>
+    </section>
+
+    <article class="card">
+      <header class="card-head row">
+        <div>
+          <h2>Drive timeline</h2>
+          <p class="muted small">Heart rate, blink rate and eye openness over one drive. Fatigue events are marked as vertical lines.</p>
+        </div>
+        <label class="field">
+          <span>Drive</span>
+          <select id="session-select"></select>
+        </label>
+      </header>
+      <div id="timeline-empty" class="muted" hidden>No drives in this period.</div>
+      <div id="timeline">
+        <div class="legend" id="timeline-legend"></div>
+        <div class="level-strip-wrap"><span class="strip-label">Fatigue level</span><div class="level-strip" id="level-strip"></div></div>
+        <div class="chart-box tl"><canvas id="tl-hr" role="img" aria-label="Heart rate over the drive"></canvas></div>
+        <div class="chart-box tl"><canvas id="tl-blink" role="img" aria-label="Blink rate over the drive"></canvas></div>
+        <div class="chart-box tl"><canvas id="tl-ear" role="img" aria-label="Eye aspect ratio over the drive"></canvas></div>
+      </div>
+    </article>
+
+    <article class="card">
+      <header class="card-head"><h2>Recent fatigue events</h2></header>
+      <div class="table-scroll"><table class="data" id="recent-table"></table></div>
+    </article>
+  </main>
+
+  <footer class="page-footer muted small">Times shown in <span id="tz">South African time</span>. Data refreshes every minute.</footer>
+
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>
