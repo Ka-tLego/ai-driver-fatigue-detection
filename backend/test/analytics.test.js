@@ -86,3 +86,24 @@ test('heart rate summary compares the 5 minutes before events with normal drivin
   assert.equal(o.heartRate.bySeverity.High.count, 3);
   assert.match(o.heartRate.message, /6 bpm lower/);
 });
+
+test('limits for the app: break interval, danger zones with drive-time bounds, UTC offset', () => {
+  const { limitsFromOverview, utcOffsetMinutes } = require('../src/services/analytics');
+  const drives = [];
+  for (let d = 0; d < 10; d += 1) {
+    drives.push({
+      start: `2026-10-${String(5 + d).padStart(2, '0')}T04:00:00Z`,
+      minutes: 240,
+      events: [[20, 'Warning'], [190, 'High'], [200, 'High'], [215, 'Warning'], [230, 'Critical']],
+    });
+  }
+  const limits = limitsFromOverview(buildOverview(fixture(drives)), new Date('2026-10-28T10:00:00Z'));
+  assert.equal(limits.utcOffsetMinutes, 120);
+  assert.equal(limits.breakEveryMinutes, 165);
+  assert.ok(limits.dangerZones.length > 0);
+  const z = limits.dangerZones[0];
+  assert.equal(z.driveStartMin, 180);
+  assert.equal(z.driveEndMin, null);
+  assert.match(z.label, /^\d\d:00–\d\d:00 after 3h\+ of driving$/);
+  assert.equal(utcOffsetMinutes('UTC'), 0);
+});

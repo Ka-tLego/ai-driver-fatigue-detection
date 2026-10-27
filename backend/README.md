@@ -48,6 +48,7 @@ The app's `POST`/`PATCH` routes and `/api/health` stay open so phones and uptime
 | GET | `/api/sessions/:id/readings?limit=100` | Stored readings, newest first |
 | POST | `/api/events` | Store event `{ sessionId, severity: Warning/High/Critical, message, fatigueLevel?, occurredAt?, heartRateBpm?, blinkRatePerMinute?, ear?, closureSeconds? }` |
 | GET | `/api/events?sessionId=...` | Stored events, newest first |
+| GET | `/api/limits` | Break interval + high-risk periods for the app's advisories (public; last 90 days; set `LIMITS_INCLUDE_DEMO=true` to include demo data) |
 | GET | `/api/analytics/overview?days=30&includeDemo=true` | All dashboard figures (password) |
 | GET | `/api/analytics/sessions` | Recent drives for the timeline picker (password) |
 | GET | `/api/analytics/sessions/:id/timeline` | One drive's readings (averaged) and events (password) |
