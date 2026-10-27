@@ -62,6 +62,71 @@ class Sim {
 }
 
 void main() {
+  // ======================================
+  // 30 s in the next / previous level before moving (LevelGate)
+  // ======================================
+  group('level changes need 30 s in the next or previous level', () {
+    final t0 = DateTime(2026, 10, 28, 8);
+    DateTime s(num seconds) => t0.add(Duration(milliseconds: (seconds * 1000).round()));
+
+    /// Feeds [score] every 100 ms from [from] to [to] seconds.
+    void hold(LevelGate g, double score, num from, num to) {
+      for (var x = from; x < to; x += 0.1) {
+        g.update(score, s(x));
+      }
+    }
+
+    test('a brief spike does not change the level', () {
+      final g = LevelGate();
+      hold(g, 40, 0, 29); // warning range for 29 s
+      expect(g.level, FatigueLevel.normal);
+      hold(g, 10, 29, 31); // drops out: timer starts over
+      hold(g, 40, 31, 60); // another 29 s
+      expect(g.level, FatigueLevel.normal);
+    });
+
+    test('moves up after 30 s in the next level', () {
+      final g = LevelGate();
+      hold(g, 40, 0, 29.9);
+      expect(g.level, FatigueLevel.normal);
+      hold(g, 40, 29.9, 30.2);
+      expect(g.level, FatigueLevel.warning);
+    });
+
+    test('moves one step at a time, 30 s per step', () {
+      final g = LevelGate();
+      hold(g, 95, 0, 30.1); // critical-range score
+      expect(g.level, FatigueLevel.warning);
+      hold(g, 95, 30.1, 60.2);
+      expect(g.level, FatigueLevel.high);
+      hold(g, 95, 60.2, 90.3);
+      expect(g.level, FatigueLevel.critical);
+    });
+
+    test('moves down after 30 s below the current level, one step at a time', () {
+      final g = LevelGate();
+      hold(g, 95, 0, 91); // up to critical
+      expect(g.level, FatigueLevel.critical);
+      hold(g, 0, 91, 120);
+      expect(g.level, FatigueLevel.critical, reason: 'only 29 s lower');
+      hold(g, 0, 120, 121.2);
+      expect(g.level, FatigueLevel.high);
+      hold(g, 0, 121.2, 151.3);
+      expect(g.level, FatigueLevel.warning);
+      hold(g, 0, 151.3, 181.4);
+      expect(g.level, FatigueLevel.normal);
+    });
+
+    test('staying in the current range resets the timers', () {
+      final g = LevelGate();
+      hold(g, 40, 0, 31); // warning
+      hold(g, 60, 31, 50); // high range 19 s
+      hold(g, 40, 50, 55); // back in warning range
+      hold(g, 60, 55, 80); // high range 25 s
+      expect(g.level, FatigueLevel.warning);
+    });
+  });
+
   test('a single yawn does not raise fatigue', () {
     final sim = Sim()..alert(const Duration(minutes: 2));
     sim.reset();
@@ -127,7 +192,8 @@ void main() {
 
   test('nodding off (eyes shut a third of the time) reaches critical', () {
     final sim = Sim();
-    for (var i = 0; i < 4; i++) {
+    // Long enough for 30 s in each level on the way up
+    for (var i = 0; i < 6; i++) {
       for (var k = 0; k < 15; k++) {
         sim.frames(const Duration(milliseconds: 1200), closed: true);
         sim.frames(const Duration(milliseconds: 2800));

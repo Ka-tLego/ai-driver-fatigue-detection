@@ -54,7 +54,9 @@ const double kFallSeconds = 90; // and falls over ~90 s
 const double kWarningScore = 30;
 const double kHighScore = 55;
 const double kCriticalScore = 80;
-const double kHysteresis = 8; // drop a level only this far below its threshold
+// To move up or down one level, the score must stay in the next (or
+// previous) level's range this long. One step at a time.
+const Duration kLevelDwell = Duration(seconds: 30);
 
 // ----- Immediate safety overrides -----
 const double kHighClosureSec = 1.5; // eyes closed (not yawning) -> at least HIGH
@@ -84,6 +86,57 @@ class _Sample {
   _Sample(this.time, this.closed);
 }
 
+/// Turns the score into a level, one step at a time: the score must stay in
+/// the next level's range (or below the current level's range) for
+/// kLevelDwell before the level moves. Normal -> high therefore takes at
+/// least 2 x kLevelDwell.
+class LevelGate {
+  FatigueLevel level = FatigueLevel.normal;
+  DateTime? _upSince;
+  DateTime? _downSince;
+
+  static double threshold(FatigueLevel l) => switch (l) {
+        FatigueLevel.critical => kCriticalScore,
+        FatigueLevel.high => kHighScore,
+        FatigueLevel.warning => kWarningScore,
+        FatigueLevel.normal => 0,
+      };
+
+  FatigueLevel update(double score, DateTime t) {
+    final canGoUp = level != FatigueLevel.critical;
+    final next = canGoUp ? FatigueLevel.values[level.index + 1] : level;
+    final up = canGoUp && score >= threshold(next);
+    final down = level != FatigueLevel.normal && score < threshold(level);
+
+    if (up) {
+      _downSince = null;
+      _upSince ??= t;
+      if (t.difference(_upSince!) >= kLevelDwell) {
+        level = next;
+        _upSince = null; // the next step needs its own dwell
+      }
+    } else if (down) {
+      _upSince = null;
+      _downSince ??= t;
+      if (t.difference(_downSince!) >= kLevelDwell) {
+        level = FatigueLevel.values[level.index - 1];
+        _downSince = null;
+      }
+    } else {
+      _upSince = _downSince = null; // back in the current range: start over
+    }
+    return level;
+  }
+
+  /// Pauses the dwell timers (e.g. face out of view); keeps the level.
+  void interrupt() => _upSince = _downSince = null;
+
+  void reset() {
+    level = FatigueLevel.normal;
+    interrupt();
+  }
+}
+
 class FatigueEstimator {
   // ---------- OUTPUTS ----------
   double score = 0; // 0-100, smoothed
@@ -99,7 +152,7 @@ class FatigueEstimator {
   int recentNods = 0; // last 5 min
 
   // ---------- INTERNALS ----------
-  FatigueLevel _scoreLevel = FatigueLevel.normal;
+  final LevelGate _gate = LevelGate();
   double _mouthOpenRatio = kMouthOpenRatio;
   double _yawnPeakRatio = kYawnPeakRatio;
 
@@ -140,7 +193,8 @@ class FatigueEstimator {
   /// Clears everything (new pilot / recalibration).
   void reset() {
     score = 0;
-    level = _scoreLevel = FatigueLevel.normal;
+    level = FatigueLevel.normal;
+    _gate.reset();
     reason = '';
     blinkRate = 0;
     perclos = 0;
@@ -176,6 +230,8 @@ class FatigueEstimator {
     _nodCounted = false;
     closureSeconds = 0;
     yawning = false;
+    _gate.interrupt();
+    _last = null; // no score smoothing across the gap
   }
 
   void update(FrameObservation o) {
@@ -199,17 +255,11 @@ class FatigueEstimator {
     score += (target - score) * (1 - exp(-dt / tau));
     score = score.clamp(0, 100).toDouble();
 
-    // ----- Level from score (hysteresis on the way down) -----
-    final fromScore = _levelFor(score);
-    if (fromScore.index > _scoreLevel.index) {
-      _scoreLevel = fromScore;
-    } else if (fromScore.index < _scoreLevel.index &&
-        score < _thresholdFor(_scoreLevel) - kHysteresis) {
-      _scoreLevel = fromScore;
-    }
+    // ----- Level from score (30 s in the next/previous range per step) -----
+    final scoreLevel = _gate.update(score, t);
 
     // ----- Immediate safety overrides (on top of the score level) -----
-    var shown = _scoreLevel;
+    var shown = scoreLevel;
     reason = _mainReason(parts);
     if (closureSeconds >= kCriticalClosureSec) {
       shown = FatigueLevel.critical;
@@ -369,18 +419,4 @@ class FatigueEstimator {
     final top = parts.entries.reduce((a, b) => b.value > a.value ? b : a);
     return top.value >= 3 ? top.key : '';
   }
-
-  FatigueLevel _levelFor(double s) {
-    if (s >= kCriticalScore) return FatigueLevel.critical;
-    if (s >= kHighScore) return FatigueLevel.high;
-    if (s >= kWarningScore) return FatigueLevel.warning;
-    return FatigueLevel.normal;
-  }
-
-  double _thresholdFor(FatigueLevel l) => switch (l) {
-        FatigueLevel.critical => kCriticalScore,
-        FatigueLevel.high => kHighScore,
-        FatigueLevel.warning => kWarningScore,
-        FatigueLevel.normal => 0,
-      };
 }
