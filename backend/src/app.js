@@ -8,6 +8,8 @@ const readingRoutes = require('./routes/readingRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 
 const app = express();
+// Hosted behind a proxy (e.g. Render): use the client's real IP for rate limiting.
+app.set('trust proxy', 1);
 const configuredOrigin = process.env.CORS_ORIGIN;
 
 app.use(helmet());
