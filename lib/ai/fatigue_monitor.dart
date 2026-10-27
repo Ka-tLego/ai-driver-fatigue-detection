@@ -6,6 +6,7 @@
 // This file handles the camera and ML Kit face detection; the fatigue score
 // itself (how signals build up over time) lives in fatigue_estimator.dart.
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
@@ -14,6 +15,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
+import '../sim/fatigue_simulator.dart';
 import 'fatigue_estimator.dart';
 
 export 'fatigue_estimator.dart' show FatigueLevel;
@@ -58,6 +60,16 @@ class FatigueMonitor extends ChangeNotifier {
   );
   final FatigueEstimator _estimator = FatigueEstimator();
 
+  // ---------- SIMULATION (menu) ----------
+  FatigueSimulator? _sim;
+  FatigueEstimator? _simEstimator; // separate, so real history is untouched
+  Timer? _simTimer;
+  String simulationPhase = '';
+  int? simulationSecondsLeft;
+
+  bool get isSimulating => _sim != null;
+  SimScenario? get simulationScenario => _sim?.scenario;
+
   CameraController? _controller;
   CameraDescription? _camera;
   bool _busy = false;
@@ -94,6 +106,7 @@ class FatigueMonitor extends ChangeNotifier {
   /// CameraController. Calibration restarts on the next start(); the fatigue
   /// history is kept (call resetFatigue() for a new drive).
   Future<void> stop() async {
+    stopSimulation();
     final controller = _controller;
     _controller = null;
     _camera = null;
@@ -127,8 +140,52 @@ class FatigueMonitor extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _simTimer?.cancel();
     _detector.close();
     super.dispose();
+  }
+
+  // ======================================
+  // SIMULATION
+  // Feeds made-up measurements into a fatigue estimator 10x per second
+  // instead of camera frames. Uses compressed memory so the driver can
+  // build up and recover within about a minute.
+  // ======================================
+
+  void startSimulation(SimScenario scenario) {
+    stopSimulation();
+    _sim = FatigueSimulator(scenario);
+    _simEstimator = FatigueEstimator(tuning: FatigueTuning.simulation);
+    calibrating = false;
+    _simTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      final sim = _sim;
+      final est = _simEstimator;
+      if (sim == null || est == null || _disposed) return;
+      final now = DateTime.now();
+      final frame = sim.next(now, est.level);
+      est.update(frame.observation);
+      pilotDetected = true;
+      eyeAspectRatio = frame.ear;
+      mouthRatio = frame.observation.mouthRatio ?? 0;
+      simulationPhase = frame.phase;
+      simulationSecondsLeft = frame.secondsLeft;
+      _copyOutputs();
+      _notify(now);
+    });
+  }
+
+  void stopSimulation() {
+    if (_sim == null) return;
+    _simTimer?.cancel();
+    _simTimer = null;
+    _sim = null;
+    _simEstimator = null;
+    simulationPhase = '';
+    simulationSecondsLeft = null;
+    pilotDetected = false;
+    eyeAspectRatio = 0.0;
+    recalibrate(); // back to the camera: relearn the pilot's eyes
+    if (!_disposed) notifyListeners();
   }
 
   // ======================================
@@ -136,7 +193,7 @@ class FatigueMonitor extends ChangeNotifier {
   // ======================================
 
   Future<void> _onFrame(CameraImage image) async {
-    if (_busy || _disposed) return; // drop frames while busy
+    if (_busy || _disposed || isSimulating) return; // drop frames while busy
     _busy = true;
     try {
       final input = _toInputImage(image);
@@ -310,7 +367,7 @@ class FatigueMonitor extends ChangeNotifier {
   }
 
   void _copyOutputs() {
-    final e = _estimator;
+    final e = _simEstimator ?? _estimator;
     fatigueLevel = calibrating ? FatigueLevel.normal : e.level;
     fatigueScore = e.score;
     fatigueReason = e.reason;

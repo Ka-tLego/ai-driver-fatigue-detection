@@ -9,7 +9,8 @@ import 'alerts/alert_player.dart'; // beeps + alarm
 import 'alerts/limit_advisor.dart'; // break / high-risk period warnings
 import 'sensors/heart_rate_monitor.dart'; // Garmin HR strap (Bluetooth)
 import 'services/backend_service.dart'; // REST backend
- 
+import 'sim/fatigue_simulator.dart'; // menu simulations
+
 late List<CameraDescription> cameras;
 
 // A pause longer than this (app in the background) starts a new drive.
@@ -22,6 +23,29 @@ const int kMaxPendingEvents = 200;
 const Duration kLimitsCheckEvery = Duration(seconds: 30);
 const Duration kLimitsRefresh = Duration(minutes: 15);
 const Duration kAdvisoryShowFor = Duration(seconds: 30);
+
+// Backend-limit simulations: a virtual clock running this many times faster
+// than real time, for this long.
+const int kLimitSimSpeed = 30;
+const Duration kLimitSimLength = Duration(seconds: 30);
+
+/// Options in the top-right menu.
+enum _MenuAction { warning, high, critical, fullCycle, breakLimit, riskPeriod, stop }
+
+/// Fast-forwarded virtual clock used to simulate the backend's limits.
+class _LimitSim {
+  final String name;
+  final DrivingLimits limits; // only the limit being simulated
+  final DateTime driveStart; // virtual
+  final DateTime virtualAnchor;
+  final DateTime realAnchor = DateTime.now();
+  final LimitAdvisor advisor = LimitAdvisor();
+
+  _LimitSim(this.name, this.limits, this.driveStart, this.virtualAnchor);
+
+  DateTime get now =>
+      virtualAnchor.add(DateTime.now().difference(realAnchor) * kLimitSimSpeed);
+}
 
 /// One monitoring session ("drive"). Created when monitoring starts and
 /// registered with the backend once it's reachable.
@@ -113,6 +137,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   String? _advisory; // advisory banner text (null = hidden)
   Timer? _advisoryTimer;
 
+  // Backend-limit simulation (see _startLimitSim)
+  _LimitSim? _limitSim;
+  Timer? _limitSimTimer;
+
+  bool get _simulating => monitor.isSimulating || _limitSim != null;
+
   // ======================================
   // VALUES
   // pilotDetected, blinkRate, eyeAspectRatio and fatigueLevel
@@ -154,6 +184,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _checkLimits() async {
     final drive = _drive;
     if (drive == null || controller == null || autopilotEnabled) return;
+    if (_limitSim != null) return;
 
     // Refresh the limits now and then (they change slowly)
     final fetchedAt = _limitsFetchedAt;
@@ -218,6 +249,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _checkFatigueEvent() {
     final drive = _drive;
     if (drive == null || !pilotDetected || autopilotEnabled) return;
+    if (monitor.isSimulating) return; // simulations are not recorded
     final now = DateTime.now();
 
     if (fatigueLevel == FatigueLevel.normal) {
@@ -274,7 +306,9 @@ class _DashboardScreenState extends State<DashboardScreen>
     // Never two syncs at once
     if (_backendBusy) return;
     final drive = _drive;
-    final monitoring = drive != null && controller != null;
+    // Readings pause while simulating, so test runs don't reach the dashboard
+    final monitoring =
+        drive != null && controller != null && !monitor.isSimulating;
     if (!monitoring && _pendingEvents.isEmpty) return;
     _backendBusy = true;
 
@@ -335,6 +369,126 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+
+  // ======================================
+  // SIMULATIONS (top-right menu)
+  // ======================================
+
+  void _onMenu(_MenuAction action) {
+    switch (action) {
+      case _MenuAction.warning:
+        _startFatigueSim(SimScenario.warning);
+      case _MenuAction.high:
+        _startFatigueSim(SimScenario.high);
+      case _MenuAction.critical:
+        _startFatigueSim(SimScenario.critical);
+      case _MenuAction.fullCycle:
+        _startFatigueSim(SimScenario.fullCycle);
+      case _MenuAction.breakLimit:
+        _startLimitSim(riskPeriod: false);
+      case _MenuAction.riskPeriod:
+        _startLimitSim(riskPeriod: true);
+      case _MenuAction.stop:
+        _stopLimitSim();
+        monitor.stopSimulation();
+    }
+  }
+
+  void _startFatigueSim(SimScenario scenario) {
+    _stopLimitSim();
+    monitor.startSimulation(scenario);
+  }
+
+  /// Runs a virtual clock up to the backend's break time or riskiest
+  /// period, starting 12 virtual minutes before it, so the "in 10 min" and
+  /// "now" advisories appear within about 25 s.
+  Future<void> _startLimitSim({required bool riskPeriod}) async {
+    monitor.stopSimulation();
+    _stopLimitSim();
+
+    DrivingLimits? limits;
+    try {
+      limits = await backendService.getLimits();
+      _limits = limits;
+      _limitsFetchedAt = DateTime.now();
+    } catch (e) {
+      debugPrint('Could not load driving limits: $e');
+    }
+    if (!mounted) return;
+    if (limits == null) {
+      _toast('Could not load the limits from the backend.');
+      return;
+    }
+
+    final now = DateTime.now().toUtc();
+    _LimitSim sim;
+    if (!riskPeriod) {
+      final every = limits.breakEveryMinutes;
+      if (every == null) {
+        _toast('The backend has no break recommendation yet (not enough data).');
+        return;
+      }
+      sim = _LimitSim(
+        'Break reminder',
+        DrivingLimits(
+            breakEveryMinutes: every,
+            utcOffsetMinutes: limits.utcOffsetMinutes,
+            zones: const []),
+        now.subtract(Duration(minutes: every - 12)),
+        now,
+      );
+    } else {
+      if (limits.zones.isEmpty) {
+        _toast('The backend has no high-risk periods yet (not enough data).');
+        return;
+      }
+      final zone = limits.zones.first; // the riskiest
+      // Virtual time: 2 minutes past the zone's hour (backend time zone),
+      // 12 minutes of driving before the zone starts.
+      final offset = Duration(minutes: limits.utcOffsetMinutes);
+      final local = now.add(offset);
+      final anchor =
+          DateTime.utc(local.year, local.month, local.day, zone.hour, 2)
+              .subtract(offset);
+      final driven = zone.driveStartMin > 12 ? zone.driveStartMin - 12 : 0;
+      sim = _LimitSim(
+        'High-risk period',
+        DrivingLimits(
+            breakEveryMinutes: null,
+            utcOffsetMinutes: limits.utcOffsetMinutes,
+            zones: [zone]),
+        anchor.subtract(Duration(minutes: driven)),
+        anchor,
+      );
+    }
+
+    setState(() => _limitSim = sim);
+    _limitSimTimer =
+        Timer.periodic(const Duration(milliseconds: 500), (_) => _tickLimitSim());
+  }
+
+  void _tickLimitSim() {
+    final sim = _limitSim;
+    if (sim == null || !mounted) return;
+    if (DateTime.now().difference(sim.realAnchor) > kLimitSimLength) {
+      _stopLimitSim();
+      return;
+    }
+    for (final a in sim.advisor.check(sim.limits, sim.driveStart, sim.now)) {
+      _showAdvisory(a.message);
+    }
+    setState(() {}); // virtual clock in the status bar
+  }
+
+  void _stopLimitSim() {
+    _limitSimTimer?.cancel();
+    _limitSimTimer = null;
+    if (_limitSim != null && mounted) setState(() => _limitSim = null);
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
 
   String _severityName(FatigueLevel level) =>
       level.name[0].toUpperCase() + level.name.substring(1);
@@ -468,6 +622,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     alerts.dispose();
     _limitsTimer?.cancel();
     _advisoryTimer?.cancel();
+    _limitSimTimer?.cancel();
 
     super.dispose();
   }
@@ -477,6 +632,24 @@ class _DashboardScreenState extends State<DashboardScreen>
   // ======================================
  
   String get monitoringStatus {
+    if (monitor.isSimulating) {
+      final left = monitor.simulationSecondsLeft;
+      return 'SIMULATION: ${monitor.simulationPhase.toUpperCase()}'
+          '${left == null ? '' : ' · ${left}s'}';
+    }
+
+    final limitSim = _limitSim;
+    if (limitSim != null) {
+      final now = limitSim.now;
+      final driven = now.difference(limitSim.driveStart).inMinutes;
+      final local = now.toUtc().add(
+          Duration(minutes: limitSim.limits.utcOffsetMinutes));
+      String two(int n) => n.toString().padLeft(2, '0');
+      return 'SIMULATION: ${limitSim.name.toUpperCase()} · '
+          '${driven ~/ 60}H${two(driven % 60)} DRIVING · '
+          '${two(local.hour)}:${two(local.minute)}';
+    }
+
     if (!pilotDetected) {
       return 'WAITING FOR PILOT';
     }
@@ -493,6 +666,10 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
  
   Color get monitoringColor {
+    if (_simulating) {
+      return Colors.purpleAccent;
+    }
+
     if (!pilotDetected) {
       return Colors.orange;
     }
@@ -509,6 +686,10 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
  
   IconData get monitoringIcon {
+    if (_simulating) {
+      return Icons.science;
+    }
+
     if (!pilotDetected) {
       return Icons.person_search;
     }
@@ -687,7 +868,8 @@ class _DashboardScreenState extends State<DashboardScreen>
             child: Align(
               alignment: Alignment.topCenter,
               child: Padding(
-                padding: const EdgeInsets.only(top: 15),
+                // Side padding keeps clear of the menu button (top right)
+                padding: const EdgeInsets.only(top: 15, left: 56, right: 56),
                 child: HudPanel(
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
@@ -697,16 +879,19 @@ class _DashboardScreenState extends State<DashboardScreen>
                         color: monitoringColor,
                         size: 20,
                       ),
- 
+
                       const SizedBox(width: 8),
- 
-                      Text(
-                        monitoringStatus,
-                        style: TextStyle(
-                          color: monitoringColor,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 1,
+
+                      Flexible(
+                        child: Text(
+                          monitoringStatus,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: monitoringColor,
+                            fontSize: _simulating ? 13 : 16,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1,
+                          ),
                         ),
                       ),
                     ],
@@ -920,6 +1105,92 @@ class _DashboardScreenState extends State<DashboardScreen>
             ),
           ),
  
+          // ==================================
+          // TOP RIGHT - SIMULATIONS MENU
+          // ==================================
+
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 6, right: 6),
+                child: PopupMenuButton<_MenuAction>(
+                  icon: const Icon(Icons.menu, color: Colors.white),
+                  tooltip: 'Simulations',
+                  color: const Color(0xFF1E1E1E),
+                  onSelected: _onMenu,
+                  itemBuilder: (_) {
+                    final active = monitor.simulationScenario;
+                    PopupMenuItem<_MenuAction> item(
+                      _MenuAction action,
+                      String label,
+                      IconData icon, {
+                      bool selected = false,
+                    }) =>
+                        PopupMenuItem(
+                          value: action,
+                          child: Row(
+                            children: [
+                              Icon(
+                                selected ? Icons.check : icon,
+                                size: 20,
+                                color: selected
+                                    ? Colors.purpleAccent
+                                    : Colors.white70,
+                              ),
+                              const SizedBox(width: 12),
+                              Text(label),
+                            ],
+                          ),
+                        );
+                    PopupMenuItem<_MenuAction> header(String text) =>
+                        PopupMenuItem(
+                          enabled: false,
+                          height: 32,
+                          child: Text(
+                            text,
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        );
+                    return [
+                      header('SIMULATE FATIGUE'),
+                      item(_MenuAction.warning, SimScenario.warning.label,
+                          Icons.warning_amber,
+                          selected: active == SimScenario.warning),
+                      item(_MenuAction.high, SimScenario.high.label,
+                          Icons.warning,
+                          selected: active == SimScenario.high),
+                      item(_MenuAction.critical, SimScenario.critical.label,
+                          Icons.emergency,
+                          selected: active == SimScenario.critical),
+                      item(_MenuAction.fullCycle, SimScenario.fullCycle.label,
+                          Icons.loop,
+                          selected: active == SimScenario.fullCycle),
+                      const PopupMenuDivider(),
+                      header('SIMULATE BACKEND LIMITS'),
+                      item(_MenuAction.breakLimit, 'Break reminder',
+                          Icons.free_breakfast,
+                          selected: _limitSim?.name == 'Break reminder'),
+                      item(_MenuAction.riskPeriod, 'High-risk period',
+                          Icons.schedule,
+                          selected: _limitSim?.name == 'High-risk period'),
+                      if (_simulating) ...[
+                        const PopupMenuDivider(),
+                        item(_MenuAction.stop, 'Stop simulation',
+                            Icons.stop_circle),
+                      ],
+                    ];
+                  },
+                ),
+              ),
+            ),
+          ),
+
           // ==================================
           // BOTTOM CONTROLS (AUTOPILOT ONLY)
           // The Pilot switch and fatigue dropdown were removed:

@@ -135,7 +135,46 @@ class LevelGate {
   }
 }
 
+/// How long the estimator remembers things. The defaults model a real
+/// driver; [simulation] compresses the memory so a simulated driver can
+/// build up and recover within about a minute.
+class FatigueTuning {
+  final int perclosWindowSec;
+  final int blinkWindowSec;
+  final int eyeEventWindowSec;
+  final int yawnWindowSec;
+  final double riseSeconds;
+  final double fallSeconds;
+  final int hrBaselineSec; // heart rate averaged this long = the baseline
+  final int hrWindowSec; // recent heart rate compared with the baseline
+
+  const FatigueTuning({
+    this.perclosWindowSec = kPerclosWindowSec,
+    this.blinkWindowSec = kBlinkWindowSec,
+    this.eyeEventWindowSec = kEyeEventWindowSec,
+    this.yawnWindowSec = kYawnWindowSec,
+    this.riseSeconds = kRiseSeconds,
+    this.fallSeconds = kFallSeconds,
+    this.hrBaselineSec = kHrBaselineSec,
+    this.hrWindowSec = 60,
+  });
+
+  static const simulation = FatigueTuning(
+    perclosWindowSec: 20,
+    blinkWindowSec: 30,
+    eyeEventWindowSec: 30,
+    yawnWindowSec: 40,
+    riseSeconds: 4,
+    fallSeconds: 6,
+    hrBaselineSec: 25,
+    hrWindowSec: 10,
+  );
+}
+
 class FatigueEstimator {
+  final FatigueTuning tuning;
+  FatigueEstimator({this.tuning = const FatigueTuning()});
+
   // ---------- OUTPUTS ----------
   double score = 0; // 0-100, smoothed
   FatigueLevel level = FatigueLevel.normal; // score level + safety overrides
@@ -250,7 +289,7 @@ class FatigueEstimator {
     // ----- Score -----
     final parts = _components(t);
     final target = parts.values.fold<double>(0, (a, b) => a + b);
-    final tau = target > score ? kRiseSeconds : kFallSeconds;
+    final tau = target > score ? tuning.riseSeconds : tuning.fallSeconds;
     score += (target - score) * (1 - exp(-dt / tau));
     score = score.clamp(0, 100).toDouble();
 
@@ -365,7 +404,7 @@ class FatigueEstimator {
     if (_hrBaseline == null) {
       _hrSum += bpm;
       _hrCount += 1;
-      if (t.difference(_hrStart!).inSeconds >= kHrBaselineSec && _hrCount > 0) {
+      if (t.difference(_hrStart!).inSeconds >= tuning.hrBaselineSec && _hrCount > 0) {
         _hrBaseline = _hrSum / _hrCount;
       }
     }
@@ -373,16 +412,16 @@ class FatigueEstimator {
 
   void _trimWindows(DateTime t) {
     DateTime ago(int s) => t.subtract(Duration(seconds: s));
-    final perclosCutoff = ago(kPerclosWindowSec);
+    final perclosCutoff = ago(tuning.perclosWindowSec);
     while (_samples.isNotEmpty && _samples.first.time.isBefore(perclosCutoff)) {
       if (_samples.removeFirst().closed) _closedSamples -= 1;
     }
-    _blinks.removeWhere((x) => x.isBefore(ago(kBlinkWindowSec)));
-    _slowBlinks.removeWhere((x) => x.isBefore(ago(kEyeEventWindowSec)));
-    _microsleeps.removeWhere((x) => x.isBefore(ago(kEyeEventWindowSec)));
-    _nods.removeWhere((x) => x.isBefore(ago(kEyeEventWindowSec)));
-    _yawns.removeWhere((x) => x.isBefore(ago(kYawnWindowSec)));
-    final hrCutoff = ago(60);
+    _blinks.removeWhere((x) => x.isBefore(ago(tuning.blinkWindowSec)));
+    _slowBlinks.removeWhere((x) => x.isBefore(ago(tuning.eyeEventWindowSec)));
+    _microsleeps.removeWhere((x) => x.isBefore(ago(tuning.eyeEventWindowSec)));
+    _nods.removeWhere((x) => x.isBefore(ago(tuning.eyeEventWindowSec)));
+    _yawns.removeWhere((x) => x.isBefore(ago(tuning.yawnWindowSec)));
+    final hrCutoff = ago(tuning.hrWindowSec);
     while (_heartRates.isNotEmpty && _heartRates.first.key.isBefore(hrCutoff)) {
       _heartRateSum -= _heartRates.removeFirst().value;
     }
@@ -399,7 +438,7 @@ class FatigueEstimator {
     final runningSec = t.difference(_start!).inMilliseconds / 1000.0;
 
     perclos = _samples.isEmpty ? 0 : _closedSamples / _samples.length;
-    final blinkWindow = min(kBlinkWindowSec.toDouble(), runningSec);
+    final blinkWindow = min(tuning.blinkWindowSec.toDouble(), runningSec);
     blinkRate = blinkWindow >= 15
         ? (_blinks.length * 60 / blinkWindow).round()
         : 0;
