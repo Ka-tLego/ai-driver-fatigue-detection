@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const MonitoringSession = require('../models/MonitoringSession');
 const SensorReading = require('../models/SensorReading');
 const FatigueEvent = require('../models/FatigueEvent');
+const { optionalPastDate } = require('../utils/validate');
 
 const LEVELS = ['normal', 'warning', 'high', 'critical'];
 const levelRank = (l) => Math.max(0, LEVELS.indexOf(l));
@@ -49,10 +50,18 @@ function buildSummary(session, readings, events) {
 
 router.post('/', async (req, res, next) => {
   try {
+    let startedAt;
+    try {
+      // The app sends when monitoring really started (it may reach the backend later).
+      startedAt = optionalPastDate(req.body.startedAt, 'startedAt');
+    } catch (e) {
+      return res.status(e.status).json({ success: false, message: e.message });
+    }
     const session = await MonitoringSession.create({
       pilotId: req.body.pilotId || 'pilot-001',
       notes: req.body.notes || '',
       status: 'active',
+      ...(startedAt && { startedAt }),
     });
     res.status(201).json({ success: true, message: 'Session created', data: session });
   } catch (error) { next(error); }

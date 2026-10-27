@@ -3,17 +3,10 @@ const mongoose = require('mongoose');
 const MonitoringSession = require('../models/MonitoringSession');
 const SensorReading = require('../models/SensorReading');
 
+const { optionalNumber } = require('../utils/validate');
+
 const router = express.Router();
 const LEVELS = ['normal', 'warning', 'high', 'critical'];
-
-function optionalNumber(value, name, { min, max } = {}) {
-  if (value === undefined || value === null || value === '') return undefined;
-  const n = Number(value);
-  if (!Number.isFinite(n)) throw Object.assign(new Error(`${name} must be a number.`), { status: 400 });
-  if (min !== undefined && n < min) throw Object.assign(new Error(`${name} must be >= ${min}.`), { status: 400 });
-  if (max !== undefined && n > max) throw Object.assign(new Error(`${name} must be <= ${max}.`), { status: 400 });
-  return n;
-}
 
 // Store one monitoring reading sent by the Flutter app.
 router.post('/:id/readings', async (req, res, next) => {

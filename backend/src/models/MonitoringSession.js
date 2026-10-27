@@ -7,6 +7,7 @@ const monitoringSessionSchema = new mongoose.Schema({
   notes: { type: String, default: '' },
   startedAt: { type: Date, default: Date.now },
   endedAt: { type: Date, default: null },
+  isDemo: { type: Boolean, default: false, index: true }, // created by scripts/demo-data.js
 }, { timestamps: true });
 
 module.exports = mongoose.model('MonitoringSession', monitoringSessionSchema);

@@ -1,13 +1,51 @@
+import 'dart:async';
 import 'dart:io';
  
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'services/backend_service.dart';
  
 import 'ai/fatigue_monitor.dart'; // Member 4: AI & computer vision
+import 'sensors/heart_rate_monitor.dart'; // Garmin HR strap (Bluetooth)
+import 'services/backend_service.dart'; // REST backend
  
 late List<CameraDescription> cameras;
+
+// A pause longer than this (app in the background) starts a new drive.
+const Duration kNewDriveAfter = Duration(minutes: 5);
+// A fatigue episode ends after this long back at normal.
+const Duration kEpisodeResetAfter = Duration(seconds: 10);
+// Events kept while the backend is unreachable.
+const int kMaxPendingEvents = 200;
+
+/// One monitoring session ("drive"). Created when monitoring starts and
+/// registered with the backend once it's reachable.
+class _Drive {
+  final DateTime startedAt;
+  String? id; // backend session ID
+  _Drive(this.startedAt);
+}
+
+/// A fatigue event waiting to be sent to the backend.
+class _PendingEvent {
+  final _Drive drive;
+  final FatigueLevel level;
+  final DateTime occurredAt;
+  final int? heartRateBpm;
+  final int blinkRatePerMinute;
+  final double ear;
+  final double closureSeconds;
+
+  _PendingEvent({
+    required this.drive,
+    required this.level,
+    required this.occurredAt,
+    required this.heartRateBpm,
+    required this.blinkRatePerMinute,
+    required this.ear,
+    required this.closureSeconds,
+  });
+}
  
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,8 +83,19 @@ class _DashboardScreenState extends State<DashboardScreen>
   // Member 4: AI / computer vision
   final FatigueMonitor monitor = FatigueMonitor();
 
+  // Heart rate from the Garmin chest strap over Bluetooth
+  final HeartRateMonitor heartMonitor = HeartRateMonitor();
+
+  // Backend: readings and events are sent every few seconds (see _syncBackend)
   final BackendService backendService = BackendService();
-String? sessionId;
+  _Drive? _drive;
+  DateTime? _pausedAt;
+  final List<_PendingEvent> _pendingEvents = [];
+  FatigueLevel _episodeLevel = FatigueLevel.normal;
+  DateTime? _normalSince;
+  Timer? _backendTimer;
+  bool _backendBusy = false;
+  bool? _backendOnline; // null = not tried yet
  
   // Audio player
   final AudioPlayer alertPlayer = AudioPlayer();
@@ -55,18 +104,16 @@ String? sessionId;
   // VALUES
   // pilotDetected, blinkRate, eyeAspectRatio and fatigueLevel
   // now come from the AI monitor (Member 4).
-  // heartRate and smartwatchConnected are still temporary (Member 3).
+  // heartRate and the strap status come from the Garmin HR strap over
+  // Bluetooth (heartMonitor).
   // ======================================
  
   bool pilotDetected = false;
   bool autopilotEnabled = false;
  
-  int heartRate = 76;
   int blinkRate = 0;
  
   double eyeAspectRatio = 0.0;
- 
-  bool smartwatchConnected = true;
  
   FatigueLevel fatigueLevel = FatigueLevel.normal;
  
@@ -77,13 +124,16 @@ String? sessionId;
     WidgetsBinding.instance.addObserver(this);
 
     monitor.addListener(_onMonitorUpdate);
+
+    heartMonitor.addListener(_onHeartMonitorUpdate);
+    heartMonitor.start();
  
     startCamera();
+
+    _backendTimer = Timer.periodic(kBackendInterval, (_) => _syncBackend());
  
     alertPlayer.setReleaseMode(ReleaseMode.loop);
   }
- 
-  // ======================================
  
   // ======================================
   // AI MONITOR UPDATES
@@ -106,25 +156,145 @@ String? sessionId;
       updateAlertSound();
     }
 
-  if (sessionId != null) {
-  debugPrint('Sending reading to backend...');
-  _sendReadingToBackend();
-}
+    _checkFatigueEvent();
   }
 
-  Future<void> _sendReadingToBackend() async {
+  // ======================================
+  // FATIGUE EVENTS
+  // One event each time the level rises (normal -> warning, warning -> high,
+  // ...). The episode ends after kEpisodeResetAfter back at normal, so a
+  // level flickering on and off is not counted twice.
+  // ======================================
+
+  void _checkFatigueEvent() {
+    final drive = _drive;
+    if (drive == null || !pilotDetected || autopilotEnabled) return;
+    final now = DateTime.now();
+
+    if (fatigueLevel == FatigueLevel.normal) {
+      _normalSince ??= now;
+      if (now.difference(_normalSince!) >= kEpisodeResetAfter) {
+        _episodeLevel = FatigueLevel.normal;
+      }
+      return;
+    }
+
+    _normalSince = null;
+    if (fatigueLevel.index <= _episodeLevel.index) return;
+    _episodeLevel = fatigueLevel;
+
+    if (_pendingEvents.length >= kMaxPendingEvents) _pendingEvents.removeAt(0);
+    _pendingEvents.add(_PendingEvent(
+      drive: drive,
+      level: fatigueLevel,
+      occurredAt: now,
+      heartRateBpm: heartMonitor.heartRate,
+      blinkRatePerMinute: blinkRate,
+      ear: eyeAspectRatio,
+      closureSeconds: monitor.closureSeconds,
+    ));
+  }
+ 
+  void _onHeartMonitorUpdate() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  // ======================================
+  // BACKEND
+  // Runs on a timer, separate from the camera, so an unreachable
+  // backend never stops fatigue monitoring. Keeps retrying until the
+  // backend is up; queued events are sent first.
+  // ======================================
+
+  /// Creates the backend session for a drive the first time it is needed.
+  Future<String> _registerDrive(_Drive drive) async {
+    return drive.id ??= await backendService.createSession(
+      pilotId: 'pilot-001',
+      notes: 'Created by the Flutter fatigue monitoring app',
+      startedAt: drive.startedAt,
+    );
+  }
+
+  Future<void> _syncBackend() async {
+    // Never two syncs at once
+    if (_backendBusy) return;
+    final drive = _drive;
+    final monitoring = drive != null && controller != null;
+    if (!monitoring && _pendingEvents.isEmpty) return;
+    _backendBusy = true;
+
     try {
-      await backendService.sendReading(
-        sessionId: sessionId!,
-        blinkRatePerMinute: blinkRate.toDouble(),
-        ear: eyeAspectRatio.toDouble(),
-        fatigueLevel: fatigueLevel.name.toLowerCase(),
-      );
+      // 1. Queued fatigue events, oldest first
+      while (_pendingEvents.isNotEmpty) {
+        final e = _pendingEvents.first;
+        try {
+          await backendService.sendEvent(
+            sessionId: await _registerDrive(e.drive),
+            severity: _severityName(e.level),
+            fatigueLevel: e.level.name,
+            message: 'Fatigue level rose to ${e.level.name.toUpperCase()}',
+            occurredAt: e.occurredAt,
+            heartRateBpm: e.heartRateBpm?.toDouble(),
+            blinkRatePerMinute: e.blinkRatePerMinute.toDouble(),
+            ear: e.ear,
+            closureSeconds: e.closureSeconds,
+          );
+        } on BackendRejected catch (err) {
+          // Refused for good (e.g. invalid data): drop it, don't block the queue
+          debugPrint('Fatigue event dropped: $err');
+        }
+        _pendingEvents.removeAt(0);
+      }
+
+      // 2. The current reading, while monitoring
+      if (monitoring) {
+        final bpm = heartMonitor.heartRate;
+        try {
+          await backendService.sendReading(
+            sessionId: await _registerDrive(drive),
+            heartRateBpm: bpm?.toDouble(),
+            blinkRatePerMinute: blinkRate.toDouble(),
+            ear: eyeAspectRatio,
+            fatigueLevel: fatigueLevel.name,
+          );
+        } on BackendRejected catch (err) {
+          // Session missing or ended on the backend: start a fresh one next time
+          if (err.statusCode == 404 || err.statusCode == 409) drive.id = null;
+          rethrow;
+        }
+      }
+
+      if (_backendOnline != true) {
+        _backendOnline = true;
+        debugPrint('Backend connected (session ${drive?.id})');
+      }
     } catch (e) {
-      debugPrint('Could not send reading to backend: $e');
+      // Log once per outage, not every few seconds
+      if (_backendOnline != false) {
+        debugPrint('Backend unavailable at ${BackendService.baseUrl}: $e');
+      }
+      _backendOnline = false;
+    } finally {
+      _backendBusy = false;
     }
   }
 
+
+  String _severityName(FatigueLevel level) =>
+      level.name[0].toUpperCase() + level.name.substring(1);
+
+  /// Ends the current drive on the backend (best effort, not awaited).
+  void _endDrive() {
+    final id = _drive?.id;
+    _drive = null;
+    _episodeLevel = FatigueLevel.normal;
+    _normalSince = null;
+    if (id == null) return;
+    backendService.endSession(id).catchError((Object e) {
+      debugPrint('Could not end session $id: $e');
+    });
+  }
 
   // ======================================
   // CAMERA
@@ -161,16 +331,18 @@ String? sessionId;
       return;
     }
 
-    if (sessionId == null) {
-  sessionId = await backendService.createSession(
-    pilotId: 'pilot-001',
-    notes: 'Created by the Flutter fatigue monitoring app',
-  );
-  debugPrint('Backend session created: $sessionId');
-}
-
     // Start sending camera frames to the AI monitor
     await monitor.start(newController, camera);
+
+    // New drive on the first start, or after a long break
+    final pausedAt = _pausedAt;
+    if (_drive == null ||
+        (pausedAt != null &&
+            DateTime.now().difference(pausedAt) > kNewDriveAfter)) {
+      _endDrive();
+      _drive = _Drive(DateTime.now());
+    }
+    _pausedAt = null;
 
     if (mounted) {
       setState(() {});
@@ -190,6 +362,7 @@ String? sessionId;
       fatigueLevel = FatigueLevel.normal;
     });
 
+    _pausedAt = DateTime.now();
     await alertPlayer.stop();
     await monitor.stop();
     await oldController.dispose();
@@ -295,6 +468,10 @@ String? sessionId;
     WidgetsBinding.instance.removeObserver(this);
     monitor.removeListener(_onMonitorUpdate);
     monitor.dispose();
+    heartMonitor.removeListener(_onHeartMonitorUpdate);
+    heartMonitor.dispose();
+    _backendTimer?.cancel();
+    _endDrive();
  
     controller?.dispose();
     alertPlayer.dispose();
@@ -350,6 +527,30 @@ String? sessionId;
     return Icons.sensors;
   }
  
+  // ======================================
+  // HR STRAP INFORMATION
+  // ======================================
+
+  String get heartRateText {
+    final bpm = heartMonitor.heartRate;
+    return bpm == null ? '-- BPM' : '$bpm BPM';
+  }
+
+  String get strapText {
+    switch (heartMonitor.status) {
+      case StrapStatus.unsupported:
+        return 'NO BLUETOOTH';
+      case StrapStatus.bluetoothOff:
+        return 'BLUETOOTH OFF';
+      case StrapStatus.searching:
+        return 'SEARCHING';
+      case StrapStatus.connecting:
+        return 'CONNECTING';
+      case StrapStatus.connected:
+        return 'CONNECTED';
+    }
+  }
+
   // ======================================
   // FATIGUE INFORMATION
   // ======================================
@@ -575,7 +776,7 @@ String? sessionId;
                 child: HudMetric(
                   icon: Icons.favorite,
                   label: 'HEART RATE',
-                  value: '$heartRate BPM',
+                  value: heartRateText,
                 ),
               ),
             ),
@@ -624,7 +825,7 @@ String? sessionId;
           ),
  
           // ==================================
-          // BOTTOM LEFT - SMARTWATCH
+          // BOTTOM LEFT - HR STRAP
           // ==================================
  
           SafeArea(
@@ -636,12 +837,12 @@ String? sessionId;
                   bottom: 100,
                 ),
                 child: HudMetric(
-                  icon: Icons.watch,
-                  label: 'SMARTWATCH',
-                  value:
-                      smartwatchConnected
-                          ? 'CONNECTED'
-                          : 'DISCONNECTED',
+                  icon: Icons.monitor_heart,
+                  label: 'HR STRAP',
+                  value: strapText,
+                  valueColor: heartMonitor.connected
+                      ? Colors.greenAccent
+                      : Colors.orange,
                 ),
               ),
             ),
