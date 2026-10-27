@@ -158,6 +158,8 @@ function buildOverview({ sessions, events, activeMinutes, heartRate = {}, tz }) 
     .map((c) => ({
       hour: c.hour,
       driveLabel: heatBuckets[c.bucket].label,
+      driveStartMin: heatBuckets[c.bucket].startMin,
+      driveEndMin: heatBuckets[c.bucket].endMin,
       rate: c.rate,
       ratio: c.ratio,
       events: c.total,
@@ -262,6 +264,39 @@ function summariseHeartRate({ normalAvg = null, normalCount = 0, preEvent = [] }
     eventsWithHr: withHr.length,
     bySeverity,
     message,
+  };
+}
+
+// ======================================
+// LIMITS FOR THE APP
+// ======================================
+
+/** Minutes the time zone is ahead of UTC at `date` (e.g. 120 for SAST). */
+function utcOffsetMinutes(tz, date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(date).map((p) => [p.type, p.value]));
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  return Math.round((asUtc - date.getTime()) / 60000) || 0; // avoid -0
+}
+
+/** The parts of the overview the app warns about: break interval + danger zones. */
+function limitsFromOverview(o, now = new Date()) {
+  const pad = (h) => `${String(h).padStart(2, '0')}:00`;
+  return {
+    timezone: o.timezone,
+    utcOffsetMinutes: utcOffsetMinutes(o.timezone, now),
+    basedOnDrivingHours: o.totals.drivingHours,
+    breakEveryMinutes: o.breakRecommendation.minutes,
+    breakMessage: o.breakRecommendation.message,
+    dangerZones: o.dangerZones.map((z) => ({
+      hour: z.hour,
+      driveStartMin: z.driveStartMin,
+      driveEndMin: z.driveEndMin,
+      ratio: z.ratio,
+      label: `${pad(z.hour)}–${pad((z.hour + 1) % 24)} after ${z.driveLabel.replace('–', ' to ')} of driving`,
+    })),
   };
 }
 
@@ -428,6 +463,8 @@ async function loadTimeline(sessionId) {
 
 module.exports = {
   buildOverview,
+  limitsFromOverview,
+  utcOffsetMinutes,
   loadOverview,
   loadSessionList,
   loadTimeline,

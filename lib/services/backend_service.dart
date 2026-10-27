@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../alerts/limit_advisor.dart';
+
 // How often the app sends a reading (backend allows 300 requests/min).
 const Duration kBackendInterval = Duration(seconds: 2);
 
@@ -76,6 +78,17 @@ class BackendService {
 
     _check(response, 201, 'Could not create monitoring session.');
     return jsonDecode(response.body)['data']['_id'].toString();
+  }
+
+  /// Driving limits learned from past drives (break interval, high-risk
+  /// periods). Public endpoint, no password needed.
+  Future<DrivingLimits> getLimits() async {
+    final response = await http
+        .get(Uri.parse('$baseUrl/limits'))
+        .timeout(const Duration(seconds: 15));
+    _check(response, 200, 'Could not load driving limits.');
+    return DrivingLimits.fromJson(
+        jsonDecode(response.body)['data'] as Map<String, dynamic>);
   }
 
   /// Marks a monitoring session as ended.

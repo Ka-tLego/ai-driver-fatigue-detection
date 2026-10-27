@@ -8,6 +8,7 @@ const sessionRoutes = require('./routes/sessionRoutes');
 const readingRoutes = require('./routes/readingRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const analyticsRoutes = require('./routes/analyticsRoutes');
+const limitsRoutes = require('./routes/limitsRoutes');
 const { requirePassword, requirePasswordForReads } = require('./middleware/dashboardAuth');
 
 const app = express();
@@ -37,6 +38,7 @@ app.use('/api/sessions', requirePasswordForReads, sessionRoutes);
 app.use('/api/sessions', requirePasswordForReads, readingRoutes);
 app.use('/api/events', requirePasswordForReads, eventRoutes);
 app.use('/api/analytics', requirePassword, analyticsRoutes);
+app.use('/api/limits', limitsRoutes); // public: the app needs it without a password
 
 // Dashboard website
 app.get('/', (_req, res) => res.redirect('/dashboard/'));

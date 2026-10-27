@@ -3,9 +3,10 @@ import 'dart:io';
  
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:audioplayers/audioplayers.dart';
- 
+
 import 'ai/fatigue_monitor.dart'; // Member 4: AI & computer vision
+import 'alerts/alert_player.dart'; // beeps + alarm
+import 'alerts/limit_advisor.dart'; // break / high-risk period warnings
 import 'sensors/heart_rate_monitor.dart'; // Garmin HR strap (Bluetooth)
 import 'services/backend_service.dart'; // REST backend
  
@@ -17,6 +18,10 @@ const Duration kNewDriveAfter = Duration(minutes: 5);
 const Duration kEpisodeResetAfter = Duration(seconds: 10);
 // Events kept while the backend is unreachable.
 const int kMaxPendingEvents = 200;
+// How often to check the driving limits, refresh them, and show advisories.
+const Duration kLimitsCheckEvery = Duration(seconds: 30);
+const Duration kLimitsRefresh = Duration(minutes: 15);
+const Duration kAdvisoryShowFor = Duration(seconds: 30);
 
 /// One monitoring session ("drive"). Created when monitoring starts and
 /// registered with the backend once it's reachable.
@@ -97,9 +102,17 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _backendBusy = false;
   bool? _backendOnline; // null = not tried yet
  
-  // Audio player
-  final AudioPlayer alertPlayer = AudioPlayer();
- 
+  // Fatigue alarms (beeps / continuous) and advisory beeps
+  final AlertPlayer alerts = AlertPlayer();
+
+  // Driving limits from the backend (break interval, high-risk periods)
+  final LimitAdvisor _advisor = LimitAdvisor();
+  DrivingLimits? _limits;
+  DateTime? _limitsFetchedAt;
+  Timer? _limitsTimer;
+  String? _advisory; // advisory banner text (null = hidden)
+  Timer? _advisoryTimer;
+
   // ======================================
   // VALUES
   // pilotDetected, blinkRate, eyeAspectRatio and fatigueLevel
@@ -131,10 +144,46 @@ class _DashboardScreenState extends State<DashboardScreen>
     startCamera();
 
     _backendTimer = Timer.periodic(kBackendInterval, (_) => _syncBackend());
- 
-    alertPlayer.setReleaseMode(ReleaseMode.loop);
+    _limitsTimer = Timer.periodic(kLimitsCheckEvery, (_) => _checkLimits());
   }
- 
+
+  // ======================================
+  // DRIVING LIMITS (advisories with a single beep)
+  // ======================================
+
+  Future<void> _checkLimits() async {
+    final drive = _drive;
+    if (drive == null || controller == null || autopilotEnabled) return;
+
+    // Refresh the limits now and then (they change slowly)
+    final fetchedAt = _limitsFetchedAt;
+    if (fetchedAt == null ||
+        DateTime.now().difference(fetchedAt) > kLimitsRefresh) {
+      _limitsFetchedAt = DateTime.now();
+      try {
+        _limits = await backendService.getLimits();
+      } catch (e) {
+        _limitsFetchedAt = null; // retry on the next check
+        debugPrint('Could not load driving limits: $e');
+      }
+    }
+
+    final limits = _limits;
+    if (limits == null || !mounted || _drive != drive) return;
+    for (final a in _advisor.check(limits, drive.startedAt, DateTime.now())) {
+      _showAdvisory(a.message);
+    }
+  }
+
+  void _showAdvisory(String message) {
+    setState(() => _advisory = message);
+    alerts.advisoryBeep();
+    _advisoryTimer?.cancel();
+    _advisoryTimer = Timer(kAdvisoryShowFor, () {
+      if (mounted) setState(() => _advisory = null);
+    });
+  }
+
   // ======================================
   // AI MONITOR UPDATES
   // ======================================
@@ -348,6 +397,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       _endDrive();
       _drive = _Drive(DateTime.now());
       monitor.resetFatigue();
+      _advisor.reset();
+      _limitsFetchedAt = null; // fetch fresh limits for the new drive
     }
     _pausedAt = null;
 
@@ -370,7 +421,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
 
     _pausedAt = DateTime.now();
-    await alertPlayer.stop();
+    await alerts.setLevel(FatigueLevel.normal);
     await monitor.stop();
     await oldController.dispose();
   }
@@ -395,79 +446,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   // ALERT SOUND
   // ======================================
  
+  /// WARNING: 3 beeps every minute, HIGH: 5 beeps every minute,
+  /// CRITICAL: continuous alarm (see alerts/alert_player.dart).
   Future<void> updateAlertSound() async {
-    // No pilot = no alarm
-    if (!pilotDetected) {
-      await alertPlayer.stop();
-      return;
-    }
- 
-    // Autopilot = monitoring paused
-    if (autopilotEnabled) {
-      await alertPlayer.stop();
-      return;
-    }
- 
-    switch (fatigueLevel) {
-      // =========================
-      // NORMAL
-      // =========================
- 
-      case FatigueLevel.normal:
-        await alertPlayer.stop();
-        break;
- 
-      // =========================
-      // WARNING
-      // =========================
- 
-      case FatigueLevel.warning:
-        await alertPlayer.stop();
- 
-        await alertPlayer.setVolume(0.35);
-        await alertPlayer.setPlaybackRate(1.0);
-        await alertPlayer.setReleaseMode(ReleaseMode.loop);
- 
-        await alertPlayer.play(
-          AssetSource('sounds/alert.mp3'),
-        );
- 
-        break;
- 
-      // =========================
-      // HIGH FATIGUE
-      // =========================
- 
-      case FatigueLevel.high:
-        await alertPlayer.stop();
- 
-        await alertPlayer.setVolume(0.70);
-        await alertPlayer.setPlaybackRate(1.25);
-        await alertPlayer.setReleaseMode(ReleaseMode.loop);
- 
-        await alertPlayer.play(
-          AssetSource('sounds/alert.mp3'),
-        );
- 
-        break;
- 
-      // =========================
-      // CRITICAL FATIGUE
-      // =========================
- 
-      case FatigueLevel.critical:
-        await alertPlayer.stop();
- 
-        await alertPlayer.setVolume(1.0);
-        await alertPlayer.setPlaybackRate(1.50);
-        await alertPlayer.setReleaseMode(ReleaseMode.loop);
- 
-        await alertPlayer.play(
-          AssetSource('sounds/alert.mp3'),
-        );
- 
-        break;
-    }
+    // No alarm without a pilot in view, or while on autopilot
+    final allowed = pilotDetected && !autopilotEnabled;
+    await alerts.setLevel(allowed ? fatigueLevel : FatigueLevel.normal);
   }
  
   @override
@@ -481,8 +465,10 @@ class _DashboardScreenState extends State<DashboardScreen>
     _endDrive();
  
     controller?.dispose();
-    alertPlayer.dispose();
- 
+    alerts.dispose();
+    _limitsTimer?.cancel();
+    _advisoryTimer?.cancel();
+
     super.dispose();
   }
  
@@ -584,13 +570,13 @@ class _DashboardScreenState extends State<DashboardScreen>
         return 'Pilot condition normal';
  
       case FatigueLevel.warning:
-        return 'FATIGUE WARNING';
- 
+        return 'PULL OVER TO REST';
+
       case FatigueLevel.high:
-        return 'HIGH FATIGUE DETECTED';
- 
+        return 'PULL OVER IMMEDIATELY';
+
       case FatigueLevel.critical:
-        return 'CRITICAL FATIGUE DETECTED';
+        return 'STOP FOR REST IMMEDIATELY';
     }
   }
  
@@ -730,6 +716,46 @@ class _DashboardScreenState extends State<DashboardScreen>
             ),
           ),
  
+          // ==================================
+          // DRIVING-LIMIT ADVISORY (break due / high-risk period)
+          // ==================================
+
+          if (_advisory != null && !autopilotEnabled)
+            SafeArea(
+              child: Align(
+                alignment: const Alignment(0, 0.35),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 360),
+                    child: HudPanel(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.schedule,
+                            color: Colors.lightBlueAccent,
+                            size: 22,
+                          ),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              _advisory!,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           // ==================================
           // CENTRE FATIGUE WARNING
           // ==================================
