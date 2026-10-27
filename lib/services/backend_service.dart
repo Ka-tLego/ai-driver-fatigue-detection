@@ -31,13 +31,15 @@ void _check(http.Response response, int expected, String fallback) {
 }
 
 class BackendService {
-  // Backend address. "localhost" on a phone means the phone itself, so:
-  //   - USB phone:  run `adb reverse tcp:3000 tcp:3000` (keeps this default)
+  // Backend address. Defaults to the hosted backend on Render, so a plain
+  // `flutter run` / VS Code Run works. To test against a backend on your PC:
+  //   - USB phone:  adb reverse tcp:3000 tcp:3000, then
+  //                 flutter run --dart-define=BACKEND_URL=http://localhost:3000/api
   //   - Wi-Fi:      flutter run --dart-define=BACKEND_URL=http://<PC IP>:3000/api
   //   - Emulator:   flutter run --dart-define=BACKEND_URL=http://10.0.2.2:3000/api
   static const String baseUrl = String.fromEnvironment(
     'BACKEND_URL',
-    defaultValue: 'http://localhost:3000/api',
+    defaultValue: 'https://ai-driver-fatigue-detection.onrender.com/api',
   );
 
   /// Checks whether the backend is reachable.
