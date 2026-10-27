@@ -191,12 +191,17 @@ class _DashboardScreenState extends State<DashboardScreen>
       heartRateBpm: heartMonitor.heartRate,
       blinkRatePerMinute: blinkRate,
       ear: eyeAspectRatio,
-      closureSeconds: monitor.closureSeconds,
+      // Current closure if the eyes are shut now, else the last one
+      closureSeconds: monitor.closureSeconds > 0
+          ? monitor.closureSeconds
+          : monitor.lastClosureSeconds,
     ));
   }
  
   void _onHeartMonitorUpdate() {
     if (!mounted) return;
+    // Heart rate is one of the fatigue signals
+    monitor.heartRateBpm = heartMonitor.heartRate;
     setState(() {});
   }
 
@@ -257,6 +262,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             blinkRatePerMinute: blinkRate.toDouble(),
             ear: eyeAspectRatio,
             fatigueLevel: fatigueLevel.name,
+            fatigueScore: monitor.fatigueScore,
           );
         } on BackendRejected catch (err) {
           // Session missing or ended on the backend: start a fresh one next time
@@ -341,6 +347,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             DateTime.now().difference(pausedAt) > kNewDriveAfter)) {
       _endDrive();
       _drive = _Drive(DateTime.now());
+      monitor.resetFatigue();
     }
     _pausedAt = null;
 
@@ -755,6 +762,21 @@ class _DashboardScreenState extends State<DashboardScreen>
                           letterSpacing: 1,
                         ),
                       ),
+
+                      // Main cause, e.g. "frequent yawning"
+                      if (monitor.fatigueReason.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            monitor.fatigueReason.toUpperCase(),
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                              letterSpacing: 1,
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -863,7 +885,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                 child: HudMetric(
                   icon: fatigueIcon,
                   label: 'FATIGUE RISK',
-                  value: fatigueText,
+                  // Level plus the 0-100 score that builds up over time
+                  value: '$fatigueText ${monitor.fatigueScore.round()}',
                   valueColor: fatigueColor,
                   alignRight: true,
                 ),
