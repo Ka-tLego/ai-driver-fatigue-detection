@@ -49,6 +49,20 @@ class DrivingLimits {
     required this.zones,
   });
 
+  /// Limits worked out from the demo drives (npm run demo:add). Used by the
+  /// simulations when the backend can't provide limits.
+  static const demo = DrivingLimits(
+    breakEveryMinutes: 75,
+    utcOffsetMinutes: 120, // SAST
+    zones: [
+      DangerZone(hour: 2, driveStartMin: 180, driveEndMin: null, ratio: 4.7, label: '02:00–03:00 after 3h+ of driving'),
+      DangerZone(hour: 1, driveStartMin: 180, driveEndMin: null, ratio: 3.9, label: '01:00–02:00 after 3h+ of driving'),
+      DangerZone(hour: 0, driveStartMin: 150, driveEndMin: 180, ratio: 3.2, label: '00:00–01:00 after 2h30 to 3h of driving'),
+      DangerZone(hour: 22, driveStartMin: 180, driveEndMin: null, ratio: 2.9, label: '22:00–23:00 after 3h+ of driving'),
+      DangerZone(hour: 11, driveStartMin: 180, driveEndMin: null, ratio: 2.8, label: '11:00–12:00 after 3h+ of driving'),
+    ],
+  );
+
   factory DrivingLimits.fromJson(Map<String, dynamic> j) => DrivingLimits(
         breakEveryMinutes: (j['breakEveryMinutes'] as num?)?.toInt(),
         utcOffsetMinutes: (j['utcOffsetMinutes'] as num? ?? 0).toInt(),

@@ -83,10 +83,12 @@ class BackendService {
   }
 
   /// Driving limits learned from past drives (break interval, high-risk
-  /// periods). Public endpoint, no password needed.
-  Future<DrivingLimits> getLimits() async {
+  /// periods). Public endpoint, no password needed. [includeDemo] also
+  /// uses the demo drives (for simulations).
+  Future<DrivingLimits> getLimits({bool includeDemo = false}) async {
+    final query = includeDemo ? '?includeDemo=true' : '';
     final response = await http
-        .get(Uri.parse('$baseUrl/limits'))
+        .get(Uri.parse('$baseUrl/limits$query'))
         .timeout(const Duration(seconds: 15));
     _check(response, 200, 'Could not load driving limits.');
     return DrivingLimits.fromJson(

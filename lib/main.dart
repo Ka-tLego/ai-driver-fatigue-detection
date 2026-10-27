@@ -401,33 +401,31 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   /// Runs a virtual clock up to the backend's break time or riskiest
   /// period, starting 12 virtual minutes before it, so the "in 10 min" and
-  /// "now" advisories appear within about 25 s.
+  /// "now" advisories appear within about 25 s. Uses limits from real and
+  /// demo drives; falls back to the built-in demo limits if the backend
+  /// can't provide them.
   Future<void> _startLimitSim({required bool riskPeriod}) async {
     monitor.stopSimulation();
     _stopLimitSim();
 
     DrivingLimits? limits;
     try {
-      limits = await backendService.getLimits();
-      _limits = limits;
-      _limitsFetchedAt = DateTime.now();
+      limits = await backendService.getLimits(includeDemo: true);
     } catch (e) {
       debugPrint('Could not load driving limits: $e');
     }
     if (!mounted) return;
-    if (limits == null) {
-      _toast('Could not load the limits from the backend.');
-      return;
+    final missing = limits == null ||
+        (riskPeriod ? limits.zones.isEmpty : limits.breakEveryMinutes == null);
+    if (missing) {
+      limits = DrivingLimits.demo;
+      _toast('Backend limits not available: using the demo-data limits.');
     }
 
     final now = DateTime.now().toUtc();
     _LimitSim sim;
     if (!riskPeriod) {
-      final every = limits.breakEveryMinutes;
-      if (every == null) {
-        _toast('The backend has no break recommendation yet (not enough data).');
-        return;
-      }
+      final every = limits.breakEveryMinutes!;
       sim = _LimitSim(
         'Break reminder',
         DrivingLimits(
@@ -438,10 +436,6 @@ class _DashboardScreenState extends State<DashboardScreen>
         now,
       );
     } else {
-      if (limits.zones.isEmpty) {
-        _toast('The backend has no high-risk periods yet (not enough data).');
-        return;
-      }
       final zone = limits.zones.first; // the riskiest
       // Virtual time: 2 minutes past the zone's hour (backend time zone),
       // 12 minutes of driving before the zone starts.

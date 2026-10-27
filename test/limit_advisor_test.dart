@@ -67,6 +67,16 @@ void main() {
     expect(advisor.check(limits, start, at(66)), isNotEmpty);
   });
 
+  test('built-in demo limits drive the simulations when the backend has none', () {
+    final advisor = LimitAdvisor();
+    const demo = DrivingLimits.demo;
+    expect(demo.breakEveryMinutes, 75);
+    expect(demo.zones.first.label, contains('02:00'));
+    // 12 min before the break, run forward: "in 10 min", then "reached"
+    expect(keys(advisor.check(demo, start, at(66))), contains('break-soon-1'));
+    expect(keys(advisor.check(demo, start, at(75))), contains('break-1'));
+  });
+
   test('parses the backend response', () {
     final l = DrivingLimits.fromJson({
       'breakEveryMinutes': 75,
