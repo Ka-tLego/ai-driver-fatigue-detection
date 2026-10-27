@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'services/backend_service.dart';
  
 import 'ai/fatigue_monitor.dart'; // Member 4: AI & computer vision
  
@@ -43,6 +44,9 @@ class _DashboardScreenState extends State<DashboardScreen>
  
   // Member 4: AI / computer vision
   final FatigueMonitor monitor = FatigueMonitor();
+
+  final BackendService backendService = BackendService();
+String? sessionId;
  
   // Audio player
   final AudioPlayer alertPlayer = AudioPlayer();
@@ -80,27 +84,48 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
  
   // ======================================
+ 
+  // ======================================
   // AI MONITOR UPDATES
   // ======================================
- 
+
   void _onMonitorUpdate() {
     if (!mounted) return;
- 
+
     final changed = pilotDetected != monitor.pilotDetected ||
         fatigueLevel != monitor.fatigueLevel;
- 
+
     setState(() {
       pilotDetected = monitor.pilotDetected;
       blinkRate = monitor.blinkRate;
       eyeAspectRatio = monitor.eyeAspectRatio;
       fatigueLevel = monitor.fatigueLevel;
     });
- 
+
     if (changed) {
       updateAlertSound();
     }
+
+  if (sessionId != null) {
+  debugPrint('Sending reading to backend...');
+  _sendReadingToBackend();
+}
   }
- 
+
+  Future<void> _sendReadingToBackend() async {
+    try {
+      await backendService.sendReading(
+        sessionId: sessionId!,
+        blinkRatePerMinute: blinkRate.toDouble(),
+        ear: eyeAspectRatio.toDouble(),
+        fatigueLevel: fatigueLevel.name.toLowerCase(),
+      );
+    } catch (e) {
+      debugPrint('Could not send reading to backend: $e');
+    }
+  }
+
+
   // ======================================
   // CAMERA
   // ======================================
@@ -135,6 +160,14 @@ class _DashboardScreenState extends State<DashboardScreen>
       await newController.dispose();
       return;
     }
+
+    if (sessionId == null) {
+  sessionId = await backendService.createSession(
+    pilotId: 'pilot-001',
+    notes: 'Created by the Flutter fatigue monitoring app',
+  );
+  debugPrint('Backend session created: $sessionId');
+}
 
     // Start sending camera frames to the AI monitor
     await monitor.start(newController, camera);
